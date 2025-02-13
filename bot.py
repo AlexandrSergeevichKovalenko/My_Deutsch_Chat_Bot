@@ -99,6 +99,16 @@ def initialize_database():
             unique_id INT NOT NULL
         );
     """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_progress (
+            user_id BIGINT PRIMARY KEY,
+            username TEXT,
+            start_time TIMESTAMP,
+            end_time TIMESTAMP,
+            completed BOOLEAN DEFAULT FALSE
+        );
+    """)
 
 
     conn.commit()
@@ -137,6 +147,76 @@ async def log_message(update: Update, context: CallbackContext):
     conn.commit()
     cursor.close()
     conn.close()
+
+async def letsgo(update: Update, context: CallbackContext):
+    user = update.message.from_user
+    user_id = user.id
+    username = user.username or user.first_name
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Проверяем, не запустил ли уже пользователь перевод
+    cursor.execute("SELECT start_time FROM user_progress WHERE user_id = %s;", (user_id,))
+    row = cursor.fetchone()
+
+    if row:
+        logging.info(f"⏳ Пользователь {username} ({user_id}) уже начал перевод.")
+        await update.message.reply_text("❌ Вы уже начали перевод! Завершите его перед повторным запуском.")
+        cursor.close()
+        conn.close()
+        return
+
+    # Фиксируем время старта
+    cursor.execute(
+        "INSERT INTO user_progress (user_id, username, start_time) VALUES (%s, %s, NOW()) "
+        "ON CONFLICT (user_id) DO UPDATE SET start_time = NOW(), completed = FALSE;",
+        (user_id, username)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    logging.info(f"🚀 Пользователь {username} ({user_id}) начал перевод. Время зафиксировано.")
+
+    # Отправляем пользователю задания
+    sentences = await get_original_sentences()
+    tasks = "\n".join([f"{i+1}. {sentence}" for i, sentence in enumerate(sentences)])
+
+    await update.message.reply_text(
+        f"🚀 **Вы начали перевод! Время пошло.**\n\nВот ваши предложения:\n{tasks}\n\n"
+        "Отправьте все переводы и завершите с помощью `/done`."
+    )
+
+
+async def done(update: Update, context: CallbackContext):
+    user = update.message.from_user
+    user_id = user.id
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Проверяем, начинал ли пользователь перевод
+    cursor.execute("SELECT start_time FROM user_progress WHERE user_id = %s AND completed = FALSE;", (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await update.message.reply_text("❌ Вы еще не начинали перевод! Используйте /letsgo.")
+        cursor.close()
+        conn.close()
+        return
+
+    # Фиксируем время завершения
+    cursor.execute(
+        "UPDATE user_progress SET end_time = NOW(), completed = TRUE WHERE user_id = %s;",
+        (user_id,)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await update.message.reply_text("✅ Перевод завершен! Ваш результат будет оценен.")
+
 
 
 # === Функция для генерации новых предложений с помощью GPT-4 ===
@@ -430,75 +510,97 @@ import logging
 #         f"✅ Оценка: {feedback}"
 #     )
 
-async def check_user_translation(update: Update, context: CallbackContext):
-    if update.message and update.message.text:  # Проверяем, что message не None
-        message_text = update.message.text.strip()
-        # TODO: добавить обработку текста, например, логирование
-        print(f"Received message: {message_text}")
-    else:
-        return  # Прерываем выполнение, если message нет
+import re
+import logging
 
+import re
+import logging
+
+async def check_user_translation(update: Update, context: CallbackContext):
+    if not update.message or not update.message.text:
+        return  
+
+    message_text = update.message.text.strip()
     logging.info(f"📥 Получена команда: {message_text}")
 
-    match = re.match(r"^/(перевод|translate)\s+(\d+)\s+(.+)$", message_text)
-    if not match:
-        logging.info(f"⚠️ Команда не распознана: {message_text}")
-        await update.message.reply_text("❌ Ошибка: Используйте формат `/перевод <номер> <ваш перевод>`")
+    # Удаляем команду `/translate`
+    translations_text = message_text.replace("/translate", "").strip()
+    
+    if not translations_text:
+        await update.message.reply_text("❌ Ошибка: После /translate должен идти список переводов.")
         return
 
-    unique_id = int(match.group(2))  # Теперь это уникальный номер за день
-    user_translation = match.group(3).strip()
+    # Разбираем входной текст на номера предложений и переводы
+    pattern = re.compile(r"(\d+)\.\s+(.+)")
+    translations = pattern.findall(translations_text)
+
+    if not translations:
+        await update.message.reply_text("❌ Ошибка: Используйте формат: \n\n/translate\n1. <перевод>\n2. <перевод>")
+        return
+
     user_id = update.message.from_user.id
     username = update.message.from_user.first_name
 
-    logging.info(f"✅ Распознано: Номер={unique_id}, Перевод={user_translation}")
-
-    # Получаем оригинальный текст по его уникальному номеру
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT sentence FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id = %s;",
-        (unique_id,),
-    )
-    row = cursor.fetchone()
+
+    results = []  # Храним результаты для отправки в Telegram
+
+    for number_str, user_translation in translations:
+        sentence_number = int(number_str)
+
+        # Проверяем, есть ли это предложение в базе
+        cursor.execute(
+            "SELECT sentence FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id = %s;",
+            (sentence_number,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            results.append(f"❌ Ошибка: Предложение с номером {sentence_number} не найдено.")
+            continue
+
+        original_text = row[0]
+
+        # 🔹 **Проверяем, отправлял ли этот пользователь перевод этого предложения**
+        cursor.execute(
+            "SELECT id FROM translations WHERE user_id = %s AND sentence_id = %s AND timestamp::date = CURRENT_DATE;",
+            (user_id, sentence_number)
+        )
+        existing_translation = cursor.fetchone()
+
+        if existing_translation:
+            results.append(f"⚠️ Вы уже переводили предложение {sentence_number}. Только первый перевод учитывается!")
+            continue
+
+        logging.info(f"📌 Проверяем перевод №{sentence_number}: {user_translation}")
+
+        # Проверяем перевод через GPT
+        feedback = await check_translation(original_text, user_translation)
+
+        # Получаем оценку из строки "Оценка: 85/100"
+        score_match = re.search(r"Оценка:\s*(\d+)/100", feedback)
+        score = int(score_match.group(1)) if score_match else None
+
+        # 🔹 **Сохраняем только ПЕРВЫЙ перевод пользователя**
+        cursor.execute(
+            """
+            INSERT INTO translations (user_id, username, sentence_id, user_translation, score, feedback)
+            VALUES (%s, %s, %s, %s, %s, %s);
+            """,
+            (user_id, username, sentence_number, user_translation, score, feedback),
+        )
+        conn.commit()
+
+        results.append(f"📜 **Предложение {sentence_number}**\n🎯 Оценка: {feedback}")
+
     cursor.close()
     conn.close()
 
-    if not row:
-        await update.message.reply_text(f"❌ Ошибка: Предложение с номером {unique_id} не найдено в сегодняшних заданиях.")
-        return
+    # Отправляем пользователю результаты всех переводов
+    if results:
+        await update.message.reply_text("\n\n".join(results))
 
-    original_text = row[0]
-
-    # Логируем предложение перед проверкой перевода
-    logging.info(f"📌 Проверка перевода. Оригинальное предложение: {original_text}")
-
-    # Проверяем перевод через GPT
-    feedback = await check_translation(original_text, user_translation)
-
-    # Получаем оценку
-    score_match = re.search(r"Оценка:\s*(\d+)/100", feedback)
-    score = int(score_match.group(1)) if score_match else None
-
-    # Записываем в базу данных
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO translations (user_id, username, sentence_id, user_translation, score, feedback)
-        VALUES (%s, %s, %s, %s, %s, %s);
-        """,
-        (user_id, username, unique_id, user_translation, score, feedback),
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    # Отправляем пользователю оценку
-    await update.message.reply_text(
-        f"👤 {username}, ваш перевод для {unique_id}-го предложения:\n"
-        f"✅ Оценка: {feedback}"
-    )
 
 
 
@@ -522,6 +624,59 @@ async def check_user_translation(update: Update, context: CallbackContext):
 #     await update.message.reply_text(f"✅ Оценка: {best_score}/100\n📝 Комментарий: {best_feedback}")
 
 # === Итог дня в 20:00 ===
+# async def send_daily_summary(context: CallbackContext):
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+
+#     # 1️⃣ Получаем список всех, кто делал переводы
+#     cursor.execute("""
+#         SELECT DISTINCT user_id, username 
+#         FROM translations 
+#         WHERE timestamp::date = CURRENT_DATE;
+#     """)
+#     active_users = {row[0]: row[1] for row in cursor.fetchall()}
+
+#     # 2️⃣ Получаем список всех, кто писал хоть что-то в чат
+#     cursor.execute("""
+#         SELECT DISTINCT user_id, username
+#         FROM messages
+#         WHERE timestamp::date = CURRENT_DATE;
+#     """)  
+#     all_users = {row[0]: row[1] for row in cursor.fetchall()}
+
+#     # 3️⃣ Получаем статистику переводов
+#     cursor.execute("""
+#         SELECT username, COUNT(*), AVG(score) 
+#         FROM translations 
+#         WHERE timestamp::date = CURRENT_DATE 
+#         GROUP BY username 
+#         ORDER BY COUNT(*) DESC;
+#     """)
+#     rows = cursor.fetchall()
+
+#     cursor.close()
+#     conn.close()
+
+#     # Если никто не делал переводов
+#     if not rows:
+#         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Да вы что охуели. Вы же нихуя за сегодня не сделали!")
+#         return
+
+#     summary = "📊 **Итоги дня:**\n\n"
+    
+#     # 4️⃣ Записываем всех, кто делал переводы
+#     for username, count, avg_score in rows:
+#         summary += f"👤 {username}: **{count} перевод(ов)**, средняя оценка: {avg_score:.1f}/100\n"
+
+#     # 5️⃣ Определяем "ленивых", кто писал в чат, но не переводил
+#     lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
+#     if lazy_users:
+#         summary += "\n🚨 **Ленивые мудаки:**\n"
+#         for username in lazy_users.values():
+#             summary += f"👤 {username}: ленивое дерьмо\n"
+
+#     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+
 async def send_daily_summary(context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -542,13 +697,19 @@ async def send_daily_summary(context: CallbackContext):
     """)  
     all_users = {row[0]: row[1] for row in cursor.fetchall()}
 
-    # 3️⃣ Получаем статистику переводов
+    # 3️⃣ Получаем расширенную статистику переводов
     cursor.execute("""
-        SELECT username, COUNT(*), AVG(score) 
-        FROM translations 
-        WHERE timestamp::date = CURRENT_DATE 
-        GROUP BY username 
-        ORDER BY COUNT(*) DESC;
+        SELECT 
+            t.username, 
+            COUNT(t.id) AS переводов,
+            COALESCE(AVG(t.score), 0) AS средняя_оценка,
+            COALESCE(EXTRACT(EPOCH FROM (MAX(p.end_time) - MIN(p.start_time)))/60, 9999) AS время_в_минутах,
+            COALESCE(AVG(t.score), 0) - (COALESCE(EXTRACT(EPOCH FROM (MAX(p.end_time) - MIN(p.start_time)))/60, 9999) * 2) AS итоговый_балл
+        FROM translations t
+        JOIN user_progress p ON t.user_id = p.user_id
+        WHERE t.timestamp::date = CURRENT_DATE AND p.completed = TRUE
+        GROUP BY t.username
+        ORDER BY итоговый_балл DESC;
     """)
     rows = cursor.fetchall()
 
@@ -561,12 +722,14 @@ async def send_daily_summary(context: CallbackContext):
         return
 
     summary = "📊 **Итоги дня:**\n\n"
-    
-    # 4️⃣ Записываем всех, кто делал переводы
-    for username, count, avg_score in rows:
-        summary += f"👤 {username}: **{count} перевод(ов)**, средняя оценка: {avg_score:.1f}/100\n"
 
-    # 5️⃣ Определяем "ленивых", кто писал в чат, но не переводил
+    # 🏆 Рейтинг лучших по итоговому баллу
+    medals = ["🥇", "🥈", "🥉"]  # Для топ-3
+    for i, (username, count, avg_score, minutes, final_score) in enumerate(rows):
+        medal = medals[i] if i < len(medals) else "🔹"
+        summary += f"{medal} {username}: **{count} переводов**, 🎯 {avg_score:.1f}/100, ⏱ {minutes:.1f} мин, 🏆 {final_score:.1f} баллов\n"
+
+    # 🚨 Ленивые, кто писал, но не перевел
     lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
     if lazy_users:
         summary += "\n🚨 **Ленивые мудаки:**\n"
@@ -574,6 +737,56 @@ async def send_daily_summary(context: CallbackContext):
             summary += f"👤 {username}: ленивое дерьмо\n"
 
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+
+
+async def send_weekly_summary(context: CallbackContext):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Запрос статистики за 7 дней
+    cursor.execute("""
+        SELECT 
+            t.username, 
+            COUNT(t.id) AS всего_переводов,
+            COALESCE(AVG(t.score), 0) AS средняя_оценка,
+            COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS общее_время_в_минутах,
+            COALESCE(AVG(t.score), 0) - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2) AS итоговый_балл
+        FROM translations t
+        JOIN user_progress p ON t.user_id = p.user_id
+        WHERE t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
+        AND p.completed = TRUE
+        GROUP BY t.username
+        ORDER BY итоговый_балл DESC;
+    """)
+    rows = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    if not rows:
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Неделя прошла, но никто не перевел ни одного предложения!")
+        return
+
+    summary = "🏆 **Итоги недели:**\n\n"
+
+    medals = ["🥇", "🥈", "🥉"]  # Для топ-3
+    for i, (username, count, avg_score, total_minutes, final_score) in enumerate(rows):
+        medal = medals[i] if i < len(medals) else "🔹"
+        summary += f"{medal} {username}: **{count} переводов**, 🎯 {avg_score:.1f}/100, ⏱ {total_minutes:.1f} мин, 🏆 {final_score:.1f} баллов\n"
+
+    await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+
+    # 🔹 **Очищаем старые данные после отправки итогов недели**
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM translations WHERE timestamp < CURRENT_DATE - INTERVAL '7 days';")
+    cursor.execute("DELETE FROM user_progress WHERE start_time < CURRENT_DATE - INTERVAL '7 days';")
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+
 
 async def send_morning_tasks(context=None):
     conn = get_db_connection()
@@ -639,10 +852,13 @@ def main():
     global application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Go fuck yourself and drink some beer you IDIOT!")))
+    application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Hey! Wait until tomorow for your sentances!")))
     application.add_handler(CommandHandler("newtasks", set_new_tasks))
     application.add_handler(CommandHandler("translate", check_user_translation))
     application.add_handler(CommandHandler("getmore", send_more_tasks))  # ✅ Adding /getmore command
+    application.add_handler(CommandHandler("letsgo", letsgo))
+    application.add_handler(CommandHandler("done", done))
+
 
     
     # 🔹 Логирование всех сообщений (нужно для учета ленивых)
@@ -667,6 +883,12 @@ def main():
     scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=15, minute=1)
     # 🔹 Запуск итогов дня
     scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=22)
+    #week results
+    scheduler.add_job(
+    lambda: run_async_job(send_weekly_summary, CallbackContext(application=application)), 
+    "cron", day_of_week="sun", hour=22, minute=0
+)
+
 
     scheduler.start()
     
