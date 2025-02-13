@@ -1416,6 +1416,16 @@ async def user_stats(update: Update, context: CallbackContext):
 
     await update.message.reply_text(today_text + weekly_text)
 
+import datetime
+import pytz
+
+async def debug_timezone(update: Update, context: CallbackContext):
+    now_utc = datetime.datetime.now(pytz.utc)
+    await update.message.reply_text(
+        f"🕒 Текущее UTC-время на сервере: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+
 
 def main():
     global application
@@ -1429,6 +1439,8 @@ def main():
     application.add_handler(CommandHandler("done", done))
     application.add_handler(CommandHandler("yes", confirm_done))
     application.add_handler(CommandHandler("stats", user_stats))  # ✅ Теперь можно смотреть статистику
+    application.add_handler(CommandHandler("time", debug_timezone))
+
 
     # 🔹 Логирование всех сообщений (нужно для учета ленивых)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))  
