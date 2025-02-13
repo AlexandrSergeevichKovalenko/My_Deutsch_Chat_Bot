@@ -1332,17 +1332,103 @@ import asyncio
 # if __name__ == "__main__":
 #     main()
 
+async def start(update: Update, context: CallbackContext):
+    message = (
+        "👋 **Привет!**\n"
+        "Добро пожаловать в переводческий челлендж!\n\n"
+        "📝 **Доступные команды:**\n"
+        "✅ `/letsgo` - Начать перевод\n"
+        "✅ `/done` - Завершить перевод (⚠️ потом подтвердите `/yes`!)\n"
+        "✅ `/translate` - Отправить переводы\n"
+        "✅ `/getmore` - Получить дополнительные предложения\n"
+        "✅ `/stats` - Узнать свою статистику\n"
+    )
+    await update.message.reply_text(message)
+
+
+async def user_stats(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.first_name
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # 📌 Получаем статистику за сегодняшний день
+    cursor.execute("""
+        SELECT COUNT(t.id) AS переводов, 
+               COALESCE(AVG(t.score), 0) AS средняя_оценка,
+               COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS время_в_минутах,
+               (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id) AS пропущено,
+               COALESCE(AVG(t.score), 0) 
+                   - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2) 
+                   - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id)) * 10 
+                   AS итоговый_балл
+        FROM translations t
+        JOIN user_progress p ON t.user_id = p.user_id
+        WHERE t.user_id = %s AND t.timestamp::date = CURRENT_DATE AND p.completed = TRUE
+        GROUP BY t.user_id;
+    """, (user_id,))
+    
+    today_stats = cursor.fetchone()
+
+    # 📌 Получаем статистику за неделю
+    cursor.execute("""
+        SELECT COUNT(t.id) AS всего_переводов,
+               COALESCE(AVG(t.score), 0) AS средняя_оценка,
+               COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS общее_время_в_минутах,
+               COALESCE(AVG(t.score), 0) 
+                   - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2) AS итоговый_балл
+        FROM translations t
+        JOIN user_progress p ON t.user_id = p.user_id
+        WHERE t.user_id = %s AND t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
+        AND p.completed = TRUE
+        GROUP BY t.user_id;
+    """, (user_id,))
+    
+    weekly_stats = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    # Формируем ответ
+    if today_stats:
+        today_text = (
+            f"📅 **Сегодняшняя статистика ({username})**\n"
+            f"🔹 Переведено: {today_stats[0]}\n"
+            f"🎯 Средняя оценка: {today_stats[1]:.1f}/100\n"
+            f"⏱ Время: {today_stats[2]:.1f} мин\n"
+            f"🚨 Пропущено: {today_stats[3]}\n"
+            f"🏆 Итоговый балл: {today_stats[4]:.1f}\n"
+        )
+    else:
+        today_text = f"📅 **Сегодняшняя статистика ({username})**\n❌ Нет данных (вы ещё не переводили)."
+
+    if weekly_stats:
+        weekly_text = (
+            f"\n📆 **Статистика за неделю**\n"
+            f"🔹 Переведено: {weekly_stats[0]}\n"
+            f"🎯 Средняя оценка: {weekly_stats[1]:.1f}/100\n"
+            f"⏱ Общее время: {weekly_stats[2]:.1f} мин\n"
+            f"🏆 Итоговый балл: {weekly_stats[3]:.1f}\n"
+        )
+    else:
+        weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
+
+    await update.message.reply_text(today_text + weekly_text)
+
+
 def main():
     global application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Hey! Wait until tomorow for your sentances!")))
+    application.add_handler(CommandHandler("start", start))  # ✅ Теперь `/start` сразу выдаёт инфо
     application.add_handler(CommandHandler("newtasks", set_new_tasks))
     application.add_handler(CommandHandler("translate", check_user_translation))
     application.add_handler(CommandHandler("getmore", send_more_tasks))
     application.add_handler(CommandHandler("letsgo", letsgo))
     application.add_handler(CommandHandler("done", done))
     application.add_handler(CommandHandler("yes", confirm_done))
+    application.add_handler(CommandHandler("stats", user_stats))  # ✅ Теперь можно смотреть статистику
 
     # 🔹 Логирование всех сообщений (нужно для учета ленивых)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))  
@@ -1379,7 +1465,7 @@ def main():
         )
 
     # ✅ Запуск итогов дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=22)
+    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=23, minute=1)
 
     # ✅ Запуск итогов недели
     scheduler.add_job(
