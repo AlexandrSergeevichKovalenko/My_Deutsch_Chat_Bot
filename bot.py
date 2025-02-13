@@ -1,7 +1,6 @@
 import os
 import logging
 import openai
-import os
 import psycopg2
 import datetime
 from telegram import Update
@@ -24,8 +23,16 @@ if not TELEGRAM_BOT_TOKEN:
 
 GROUP_CHAT_ID = -1002347376305  # ID вашей группы
 
+print("🚀 Все переменные окружения Railway:")
+for key, value in os.environ.items():
+    print(f"{key}: {value[:10]}...")  # Выводим первые 10 символов для безопасности
+
 # === Настройка OpenAI API ===
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# 🔍 Debugging: Проверяем, что Railway видит переменную
+print(f"DEBUG: OPENAI_API_KEY = {repr(openai.api_key)}")
+
 if not openai.api_key:
     raise ValueError("❌ Ошибка: OPENAI_API_KEY не задан. Проверь переменные окружения!")
 
