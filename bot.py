@@ -223,19 +223,19 @@ application = None  # Глобальная переменная для хран�
 
 #     await bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
 
-async def send_morning_tasks(context=None):
+async def send_more_tasks(update: Update, context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Узнаем, сколько предложений уже отправлено за сегодня
+    # 🔹 Find out how many sentences have already been sent today
     cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE;")
-    start_index = cursor.fetchone()[0]  # Количество уже отправленных предложений
+    start_index = cursor.fetchone()[0]  # Number of already sent sentences
 
-    # Генерируем новые предложения
+    # 🔹 Generate new sentences
     sentences = await get_original_sentences()
     tasks = []
-    
-    for i, sentence in enumerate(sentences, start=start_index + 1):  # Уникальная нумерация
+
+    for i, sentence in enumerate(sentences, start=start_index + 1):  # Continue numbering
         tasks.append(f"{i}. {sentence}")
         cursor.execute(
             "INSERT INTO daily_sentences (date, sentence, unique_id) VALUES (CURRENT_DATE, %s, %s);",
@@ -246,17 +246,12 @@ async def send_morning_tasks(context=None):
     cursor.close()
     conn.close()
 
-    # Формируем сообщение
-    message = f"🌅 **Guten Morgen, малые! Ловите подачу:**\n\n" + "\n".join(tasks) + \
-              "\n\nФормат ответа: `/translate <номер> <перевод>`"
+    # 🔹 Format the message
+    message = f"🔹 **More Sentences Added!**\n\n" + "\n".join(tasks) + \
+              "\n\nFormat your reply: `/translate <number> <your translation>`"
 
-    # Отправляем сообщение
-    if context:
-        bot = context.bot
-    else:
-        bot = application.bot
+    await update.message.reply_text(message)
 
-    await bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
 
 # === GPT-4 Функция для оценки перевода ===
 
@@ -429,7 +424,13 @@ import logging
 #     )
 
 async def check_user_translation(update: Update, context: CallbackContext):
-    message_text = update.message.text.strip()
+    if update.message and update.message.text:  # Проверяем, что message не None
+        message_text = update.message.text.strip()
+        # TODO: добавить обработку текста, например, логирование
+        print(f"Received message: {message_text}")
+    else:
+        return  # Прерываем выполнение, если message нет
+
     logging.info(f"📥 Получена команда: {message_text}")
 
     match = re.match(r"^/(перевод|translate)\s+(\d+)\s+(.+)$", message_text)
@@ -567,6 +568,39 @@ async def send_daily_summary(context: CallbackContext):
 
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
 
+async def send_morning_tasks(context=None):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # 🔹 Find out how many sentences have already been sent today
+    cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE;")
+    start_index = cursor.fetchone()[0]  # Number of already sent sentences
+
+    # 🔹 Generate new sentences
+    sentences = await get_original_sentences()
+    tasks = []
+
+    for i, sentence in enumerate(sentences, start=start_index + 1):  # Continue numbering
+        tasks.append(f"{i}. {sentence}")
+        cursor.execute(
+            "INSERT INTO daily_sentences (date, sentence, unique_id) VALUES (CURRENT_DATE, %s, %s);",
+            (sentence, i),
+        )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    # 🔹 Format the message
+    message = f"🌅 **Here is your morning task!**\n\n" + "\n".join(tasks) + \
+              "\n\nFormat your reply: `/translate <number> <your translation>`"
+
+    if context:
+        bot = context.bot
+    else:
+        bot = application.bot
+
+    await bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
 
 
 # === Запуск бота ===
@@ -598,9 +632,11 @@ def main():
     global application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Привет! Жди задания завтра!")))
+    application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Go fuck yourself and drink some beer you IDIOT!")))
     application.add_handler(CommandHandler("newtasks", set_new_tasks))
     application.add_handler(CommandHandler("translate", check_user_translation))
+    application.add_handler(CommandHandler("getmore", send_more_tasks))  # ✅ Adding /getmore command
+
     
     # 🔹 Логирование всех сообщений (нужно для учета ленивых)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))  
@@ -621,8 +657,9 @@ def main():
 
     # 🔹 Запуск утренних заданий
     scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=6, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=15, minute=1)
     # 🔹 Запуск итогов дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=23, minute=28)
+    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=22)
 
     scheduler.start()
     
