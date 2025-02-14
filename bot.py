@@ -11,8 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
 # 🔹 Если переменная окружения пуста, используем токен вручную (только временно)
-if not TELEGRAM_BOT_TOKEN:
-    TELEGRAM_BOT_TOKEN = "7183316017:AAHXBtqC0nvGhpgwJwhfDId1TUt0aR3JFww"
+
 
 # 🔹 Отладочный вывод, чтобы проверить, какой токен получен
 print(f"DEBUG: TELEGRAM_BOT_TOKEN = {repr(TELEGRAM_BOT_TOKEN)}")
@@ -21,7 +20,11 @@ print(f"DEBUG: TELEGRAM_BOT_TOKEN = {repr(TELEGRAM_BOT_TOKEN)}")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("❌ Ошибка: TELEGRAM_BOT_TOKEN не задан. Проверь переменные окружения!")
 
-GROUP_CHAT_ID = -1002347376305  # ID вашей группы
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID").strip()
+
+if not GROUP_CHAT_ID:
+    raise ValueError("❌ Ошибка: GROUP_CHAT_ID не задан. Проверь переменные окружения!")
+GROUP_CHAT_ID = int(GROUP_CHAT_ID)
 
 print("🚀 Все переменные окружения Railway:")
 for key, value in os.environ.items():
@@ -154,7 +157,7 @@ async def send_morning_reminder(context: CallbackContext):
         "🌅 **Доброе утро, переводчики!**\n\n"
         "Чтобы принять участие в переводе, напишите команду `/letsgo`. После этого вам будут высланы предложения.\n\n"
         "📌 **Важно:**\n"
-        "🔹 Переводите максимально точно и быстро — время влияет на итоговую оценку!\n"
+        "🔹 Переводите максимально точно и быстро —общение время вашего перевода будет отниматься от количества набранного вами итогового среднего балла(т.е. Чем дольше переводите тем больше штраф)!\n"
         "🔹 После перевода всех предложений обязательно выполните `/done`.\n"
         "🔹 В 09:00, 12:00 и 15:00 будут **промежуточные итоги** по каждому участнику.\n"
         "🔹 Итоговые результаты дня отправляются в 22:00."
@@ -268,7 +271,7 @@ async def done(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "⚠️ **Вы уверены, что хотите завершить перевод?**\n\n"
         "❗ **Проверьте, все ли переводы отправлены!**\n"
-        "Если вы уверены, отправьте команду **/confirm_done**."
+        "Если вы уверены, отправьте команду **/yes**."
     )
 
     cursor.close()
@@ -622,8 +625,6 @@ import re
 #         f"✅ Оценка: {feedback}"
 #     )
 
-import re
-import logging
 
 # async def check_user_translation(update: Update, context: CallbackContext):
 #     message_text = update.message.text.strip()  # Убираем лишние пробелы
@@ -717,12 +718,6 @@ import logging
 #         f"👤 {username}, ваш перевод для {sentence_number}-го предложения:\n"
 #         f"✅ Оценка: {feedback}"
 #     )
-
-import re
-import logging
-
-import re
-import logging
 
 # async def check_user_translation(update: Update, context: CallbackContext):
 #     if not update.message or not update.message.text:
@@ -829,7 +824,7 @@ async def check_user_translation(update: Update, context: CallbackContext):
         return
 
     # Разбираем входной текст на номера предложений и переводы
-    pattern = re.compile(r"(\d+)\.\s+(.+)")
+    pattern = re.compile(r"(\d+)\.\s*(.+)")
     translations = pattern.findall(translations_text)
 
     if not translations:
@@ -844,10 +839,10 @@ async def check_user_translation(update: Update, context: CallbackContext):
 
     # 🔹 Получаем предложения, которые были отправлены ЭТОМУ пользователю
     cursor.execute(
-        "SELECT unique_id FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id IN "
-        "(SELECT sentence_id FROM user_progress WHERE user_id = %s);",
-        (user_id,)
-    )
+    "SELECT unique_id FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id IN "
+    "(SELECT unique_id FROM daily_sentences WHERE date = CURRENT_DATE);",
+)
+
     allowed_sentences = {row[0] for row in cursor.fetchall()}  # Собираем в set() для быстрого поиска
 
     results = []  # Храним результаты для Telegram
@@ -1130,8 +1125,8 @@ async def send_daily_summary(context: CallbackContext):
             COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS время_в_минутах,
             (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id) AS пропущено,
             COALESCE(AVG(t.score), 0) 
-                - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2) 
-                - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id)) * 10 
+                - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 1) 
+                - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id)) * 20 
                 AS итоговый_балл
         FROM translations t
         JOIN user_progress p ON t.user_id = p.user_id
@@ -1486,7 +1481,7 @@ def main():
     scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=14, minute=1)
 
     # ✅ Запуск промежуточных итогов
-    for hour in [9, 12, 15]:
+    for hour in [8, 11, 14]:
         scheduler.add_job(
             lambda: run_async_job(send_progress_report, CallbackContext(application=application)),
             "cron", hour=hour, minute=0
@@ -1498,7 +1493,7 @@ def main():
     # ✅ Запуск итогов недели
     scheduler.add_job(
         lambda: run_async_job(send_weekly_summary, CallbackContext(application=application)), 
-        "cron", day_of_week="sun", hour=22, minute=0
+        "cron", day_of_week="sun", hour=21, minute=0
     )
 
     scheduler.start()
