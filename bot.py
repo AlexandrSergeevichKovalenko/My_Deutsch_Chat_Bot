@@ -20,7 +20,7 @@ print(f"DEBUG: TELEGRAM_BOT_TOKEN = {repr(TELEGRAM_BOT_TOKEN)}")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("❌ Ошибка: TELEGRAM_BOT_TOKEN не задан. Проверь переменные окружения!")
 
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID").strip()
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "").strip()
 
 if not GROUP_CHAT_ID:
     raise ValueError("❌ Ошибка: GROUP_CHAT_ID не задан. Проверь переменные окружения!")
