@@ -1219,40 +1219,56 @@ async def send_weekly_summary(context: CallbackContext):
 
 
 
+# Эта функция для автоматичес Отправки сообщений(содержащих предложения) А я хочу переделать чтобы напоминание просто слала. Функция ниже.
+# async def send_morning_tasks(context=None):
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
 
-async def send_morning_tasks(context=None):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+#     # 🔹 Find out how many sentences have already been sent today
+#     cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE;")
+#     start_index = cursor.fetchone()[0]  # Number of already sent sentences
 
-    # 🔹 Find out how many sentences have already been sent today
-    cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE;")
-    start_index = cursor.fetchone()[0]  # Number of already sent sentences
+#     # 🔹 Generate new sentences
+#     sentences = await get_original_sentences()
+#     tasks = []
 
-    # 🔹 Generate new sentences
-    sentences = await get_original_sentences()
-    tasks = []
+#     for i, sentence in enumerate(sentences, start=start_index + 1):  # Continue numbering
+#         tasks.append(f"{i}. {sentence}")
+#         cursor.execute(
+#             "INSERT INTO daily_sentences (date, sentence, unique_id) VALUES (CURRENT_DATE, %s, %s);",
+#             (sentence, i),
+#         )
 
-    for i, sentence in enumerate(sentences, start=start_index + 1):  # Continue numbering
-        tasks.append(f"{i}. {sentence}")
-        cursor.execute(
-            "INSERT INTO daily_sentences (date, sentence, unique_id) VALUES (CURRENT_DATE, %s, %s);",
-            (sentence, i),
-        )
+#     conn.commit()
+#     cursor.close()
+#     conn.close()
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+#     # 🔹 Format the message
+#     message = f"🌅 **Here is your morning task!**\n\n" + "\n".join(tasks) + \
+#               "\n\nFormat your reply: `/translate <number> <your translation>`"
 
-    # 🔹 Format the message
-    message = f"🌅 **Here is your morning task!**\n\n" + "\n".join(tasks) + \
-              "\n\nFormat your reply: `/translate <number> <your translation>`"
+#     if context:
+#         bot = context.bot
+#     else:
+#         bot = application.bot
 
-    if context:
-        bot = context.bot
-    else:
-        bot = application.bot
+#     await bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
 
-    await bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
+
+async def send_morning_tasks(context: CallbackContext):
+    message = (
+        "🌅 ** Доброго времени суток, переводчики!**\n\n"
+        "Не забудьте начать перевод! Используйте команду `/letsgo`.\n"
+        "После этого вам будут отправлены индивидуальные предложения.\n\n"
+        "📝 **Команды на день:**\n"
+        "✅ `/letsgo` - Получить задания\n"
+        "✅ `/done` - Завершить перевод (⚠️ подтвердите `/yes`!)\n"
+        "✅ `/translate` - Отправить переводы\n"
+        "✅ `/getmore` - Получить дополнительные предложения\n"
+        "✅ `/stats` - Узнать свою статистику\n"
+    )
+
+    await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
 
 
 # === Запуск бота ===
@@ -1466,8 +1482,8 @@ def main():
     )
 
     # ✅ Запуск утренних заданий
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=6, minute=1)
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=15, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=5, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=14, minute=1)
 
     # ✅ Запуск промежуточных итогов
     for hour in [9, 12, 15]:
@@ -1477,7 +1493,7 @@ def main():
         )
 
     # ✅ Запуск итогов дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=23, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=1)
 
     # ✅ Запуск итогов недели
     scheduler.add_job(
