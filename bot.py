@@ -7,10 +7,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from apscheduler.schedulers.background import BackgroundScheduler
 
+
+
 # === Настройки бота ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-
-# 🔹 Если переменная окружения пуста, используем токен вручную (только временно)
 
 
 # 🔹 Отладочный вывод, чтобы проверить, какой токен получен
@@ -31,6 +31,7 @@ print("🚀 Все переменные окружения Railway:")
 for key, value in os.environ.items():
     print(f"{key}: {value[:10]}...")  # Выводим первые 10 символов для безопасности
 
+
 # === Настройка OpenAI API ===
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -39,6 +40,8 @@ print(f"DEBUG: OPENAI_API_KEY = {repr(openai.api_key)}")
 
 if not openai.api_key:
     raise ValueError("❌ Ошибка: OPENAI_API_KEY не задан. Проверь переменные окружения!")
+
+
 
 # === Подключение к базе данных PostgreSQL ===
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -100,7 +103,8 @@ def initialize_database():
             id SERIAL PRIMARY KEY,
             date DATE NOT NULL DEFAULT CURRENT_DATE,
             sentence TEXT NOT NULL,
-            unique_id INT NOT NULL
+            unique_id INT NOT NULL,
+            user_id BIGINT  -- 🆕 Теперь указываем пользователя, которому назначено предложение
         );
     """)
     
@@ -127,8 +131,11 @@ def initialize_database():
 initialize_database()
 
 
+
 # === Логирование ===
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+
+
 
 
 async def log_message(update: Update, context: CallbackContext):
@@ -151,6 +158,8 @@ async def log_message(update: Update, context: CallbackContext):
     conn.commit()
     cursor.close()
     conn.close()
+
+
 
 
 async def send_morning_reminder(context: CallbackContext):
@@ -207,48 +216,46 @@ async def letsgo(update: Update, context: CallbackContext):
         (user_id, username)
     )
     conn.commit()
+
+    # ✅ Убираем пустые строки из списка предложений
+    sentences = [s.strip() for s in await get_original_sentences() if s.strip()]
+
+    # Проверяем, есть ли предложения (если нет, выдаем ошибку)
+    if not sentences:
+        await update.message.reply_text("❌ Ошибка: не удалось получить предложения. Попробуйте позже.")
+        cursor.close()
+        conn.close()
+        return
+
+    # ✅ **Исправленный код: уникальный `unique_id`**
+    tasks = []
+    sentence_ids = []
+    for i, sentence in enumerate(sentences, start=1):
+        cursor.execute(
+            "INSERT INTO daily_sentences (date, sentence, unique_id, user_id) VALUES (CURRENT_DATE, %s, %s, %s) RETURNING id;",
+            (sentence, i, user_id),  # ✅ Теперь `unique_id` правильно назначается
+        )
+        daily_id = cursor.fetchone()[0]  # Получаем ID предложения из базы
+        sentence_ids.append(daily_id)
+        tasks.append(f"{i}. {sentence}")  # Формируем список предложений для пользователя
+
+    conn.commit()
     cursor.close()
     conn.close()
 
-    logging.info(f"🚀 Пользователь {username} ({user_id}) начал перевод. Время зафиксировано.")
+    logging.info(f"🚀 Пользователь {username} ({user_id}) начал перевод. Записано {len(tasks)} предложений.")
 
-    # Отправляем пользователю задания
-    sentences = await get_original_sentences()
-    tasks = "\n".join([f"{i+1}. {sentence}" for i, sentence in enumerate(sentences)])
+    # 📜 **Формируем красивый текстовый список предложений**
+    tasks_text = "\n".join(tasks)
 
     await update.message.reply_text(
-        f"🚀 **Вы начали перевод! Время пошло.**\n\nВот ваши предложения:\n{tasks}\n\n"
-        "Отправьте все переводы и завершите с помощью `/done`."
+        f"🚀 **Вы начали перевод! Время пошло.**\n\n"
+        f"📜 **Ваши предложения:**\n{tasks_text}\n\n"
+        "✏️ **Отправьте все переводы и завершите с помощью** `/done`."
     )
 
 
-# async def done(update: Update, context: CallbackContext):
-#     user = update.message.from_user
-#     user_id = user.id
 
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-
-#     # Проверяем, начинал ли пользователь перевод
-#     cursor.execute("SELECT start_time FROM user_progress WHERE user_id = %s AND completed = FALSE;", (user_id,))
-#     row = cursor.fetchone()
-
-#     if not row:
-#         await update.message.reply_text("❌ Вы еще не начинали перевод! Используйте /letsgo.")
-#         cursor.close()
-#         conn.close()
-#         return
-
-#     # Фиксируем время завершения
-#     cursor.execute(
-#         "UPDATE user_progress SET end_time = NOW(), completed = TRUE WHERE user_id = %s;",
-#         (user_id,)
-#     )
-#     conn.commit()
-#     cursor.close()
-#     conn.close()
-
-#     await update.message.reply_text("✅ Перевод завершен! Ваш результат будет оценен.")
 
 
 async def done(update: Update, context: CallbackContext):
@@ -268,15 +275,36 @@ async def done(update: Update, context: CallbackContext):
         conn.close()
         return
 
-    # Подтверждение перед завершением
-    await update.message.reply_text(
-        "⚠️ **Вы уверены, что хотите завершить перевод?**\n\n"
-        "❗ **Проверьте, все ли переводы отправлены!**\n"
-        "Если вы уверены, отправьте команду **/yes**."
+    # 🔹 Проверяем, все ли предложения переведены перед завершением
+    cursor.execute(
+        "SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = %s;", 
+        (user_id,)
     )
+    total_sentences = cursor.fetchone()[0]  # Всего предложений у пользователя
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM translations WHERE user_id = %s AND timestamp::date = CURRENT_DATE;", 
+        (user_id,)
+    )
+    translated_count = cursor.fetchone()[0]  # Количество переведенных предложений
+
+    # Если есть непереведённые предложения, предупреждаем пользователя
+    if translated_count < total_sentences:
+        await update.message.reply_text(
+            f"⚠️ Вы перевели только {translated_count} из {total_sentences} предложений.\n"
+            "❗ **Вы уверены, что хотите завершить перевод?**\n\n"
+            "Если вы уверены, отправьте команду **/yes**."
+        )
+    else:
+        await update.message.reply_text(
+            "✅ **Вы перевели все предложения!**\n\n"
+            "Если вы готовы завершить перевод, отправьте команду **/yes**."
+        )
 
     cursor.close()
     conn.close()
+
+
 
 
 async def confirm_done(update: Update, context: CallbackContext):
@@ -299,9 +327,13 @@ async def confirm_done(update: Update, context: CallbackContext):
         conn.close()
         return
 
-    # Фиксируем `end_time`
+    # 🔹 **Обновляем `end_time`, защищаясь от ошибки**
     cursor.execute(
-        "UPDATE user_progress SET end_time = NOW(), completed = TRUE WHERE user_id = %s;",
+        """
+        UPDATE user_progress 
+        SET end_time = GREATEST(start_time, NOW()), completed = TRUE 
+        WHERE user_id = %s;
+        """,
         (user_id,)
     )
 
@@ -312,19 +344,23 @@ async def confirm_done(update: Update, context: CallbackContext):
     )
     translated_count = cursor.fetchone()[0]
 
-    # Получаем общее количество выданных предложений
+    # 🔹 **Исправлено! Получаем только свои предложения, а не все**
     cursor.execute(
-        "SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE;"
+        "SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = %s;",
+        (user_id,)
     )
-    total_sentences = cursor.fetchone()[0]
+    total_sentences = cursor.fetchone()[0]  # Всего предложений у пользователя
 
     # Считаем штраф за пропущенные предложения (-10 баллов за каждое)
     missing_translations = total_sentences - translated_count
-    penalty = missing_translations * 10 if missing_translations > 0 else 0
+    penalty = max(missing_translations * 20, 0)  # Если `missing_translations < 0`, штраф 0
 
     conn.commit()
     cursor.close()
     conn.close()
+
+    # Логируем результат
+    logging.info(f"✅ Пользователь {user_id} завершил перевод: {translated_count}/{total_sentences}, штраф: -{penalty} баллов.")
 
     await update.message.reply_text(
         f"✅ **Перевод завершён!**\n\n"
@@ -332,9 +368,6 @@ async def confirm_done(update: Update, context: CallbackContext):
         f"🚨 **Штраф за пропущенные:** -{penalty} баллов.\n"
         f"🏆 Итог будет учтён в вечернем рейтинге!"
     )
-
-
-
 
 
 
@@ -381,6 +414,7 @@ async def generate_sentences():
 
 
 
+
 async def get_original_sentences():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -395,26 +429,9 @@ async def get_original_sentences():
         print("⚠️ В базе данных нет предложений, генерируем новые через GPT-4...")
         return await generate_sentences()
 
-# === Команда для админа: задать свои предложения ===
-# async def set_new_tasks(update: Update, context: CallbackContext):
-#     if update.message.chat.id != GROUP_CHAT_ID:
-#         return
-    
-#     new_tasks = update.message.text.replace("/newtasks", "").strip().split("\n")
-#     if len(new_tasks) < 3:
-#         await update.message.reply_text("❌ Ошибка: Введите минимум 3 предложения через новую строку.")
-#         return
-    
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-#     cursor.execute("DELETE FROM sentences;")
-#     for task in new_tasks:
-#         cursor.execute("INSERT INTO sentences (sentence) VALUES (%s);", (task,))
-#     conn.commit()
-#     cursor.close()
-#     conn.close()
-    
-#     await update.message.reply_text("✅ Новые задания сохранены!")
+
+
+
 # Бот принимает предложения только в личке От админа группы
 async def set_new_tasks(update: Update, context: CallbackContext):
     user = update.message.from_user
@@ -444,50 +461,10 @@ async def set_new_tasks(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Новые задания сохранены! Они появятся в группе завтра утром.")
 
 
-# === Рассылка предложений в 08:00 ===
+
 application = None  # Глобальная переменная для хранения объекта бота
 
-# async def send_morning_tasks(context=None):
-#     sentences = await get_original_sentences()
-#     tasks = "\n".join([f"{i+1}. {sentence}" for i, sentence in enumerate(sentences)])
-#     message = f"🌅 **Guten Morgen, малые! Ловите подачу:**\n\n{tasks}\n\n Xватит чесать жопу. Переводите Предложения. Формат ответа: /translate Номер предложения Перевод"
 
-#     # Проверяем, передан ли context, если нет — берем бота из application
-#     if context:
-#         bot = context.bot
-#     else:
-#         bot = application.bot  # Берем бота напрямую, если контекста нет
-
-#     await bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
-
-# async def send_more_tasks(update: Update, context: CallbackContext):
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-
-#     # 🔹 Find out how many sentences have already been sent today
-#     cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE;")
-#     start_index = cursor.fetchone()[0]  # Number of already sent sentences
-
-#     # 🔹 Generate new sentences
-#     sentences = await get_original_sentences()
-#     tasks = []
-
-#     for i, sentence in enumerate(sentences, start=start_index + 1):  # Continue numbering
-#         tasks.append(f"{i}. {sentence}")
-#         cursor.execute(
-#             "INSERT INTO daily_sentences (date, sentence, unique_id) VALUES (CURRENT_DATE, %s, %s);",
-#             (sentence, i),
-#         )
-
-#     conn.commit()
-#     cursor.close()
-#     conn.close()
-
-#     # 🔹 Format the message
-#     message = f"🔹 **More Sentences Added!**\n\n" + "\n".join(tasks) + \
-#               "\n\nFormat your reply: `/translate <number> <your translation>`"
-
-#     await update.message.reply_text(message)
 
 
 
@@ -519,20 +496,20 @@ async def send_more_tasks(update: Update, context: CallbackContext):
         (user_id, username)
     )
 
-    # 🔹 Узнаём, сколько предложений уже было отправлено сегодня
-    cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE;")
-    start_index = cursor.fetchone()[0]  # Количество уже отправленных предложений
+    # 🔹 **Определяем стартовый индекс**
+    cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = %s;", (user_id,))
+    last_index = cursor.fetchone()[0]  # Количество уже выданных предложений пользователю
 
     # 🔹 Генерируем новые предложения
     sentences = await get_original_sentences()
     tasks = []
 
-    for i, sentence in enumerate(sentences, start=start_index + 1):  # Нумерация продолжается
-        tasks.append(f"{i}. {sentence}")
+    for i, sentence in enumerate(sentences, start=last_index + 1):  # **Исправлено!**
         cursor.execute(
-            "INSERT INTO daily_sentences (date, sentence, unique_id) VALUES (CURRENT_DATE, %s, %s);",
-            (sentence, i),
+            "INSERT INTO daily_sentences (date, sentence, unique_id, user_id) VALUES (CURRENT_DATE, %s, %s, %s);",
+            (sentence, i, user_id),
         )
+        tasks.append(f"{i}. {sentence}")  # **Теперь нумерация корректная!**
 
     conn.commit()
     cursor.close()
@@ -592,219 +569,6 @@ async def check_translation(original_text, user_translation):
 
     return "❌ Ошибка: Не удалось получить оценку. Попробуйте позже."
 
-import re
-
-# async def check_user_translation(update: Update, context: CallbackContext):
-#     user_id = update.message.from_user.id  # Получаем ID отправителя
-#     message_text = update.message.text
-
-#     # Проверяем, соответствует ли сообщение формату "/перевод <номер> <текст>"
-#     match = re.match(r"/перевод (\d+) (.+)", message_text)
-#     if not match:
-#         await update.message.reply_text("❌ Ошибка: Используйте формат `/перевод <номер> <ваш перевод>`")
-#         return
-
-#     sentence_number = int(match.group(1))  # Номер предложения
-#     user_translation = match.group(2)  # Сам перевод
-
-#     # Получаем оригинальные предложения
-#     original_sentences = await get_original_sentences()
-
-#     # Проверяем, существует ли предложение с таким номером
-#     if sentence_number < 1 or sentence_number > len(original_sentences):
-#         await update.message.reply_text(f"❌ Ошибка: Введите номер от 1 до {len(original_sentences)}.")
-#         return
-
-#     original_text = original_sentences[sentence_number - 1]  # Оригинал на русском
-
-#     # Проверяем перевод через GPT
-#     feedback = await check_translation(original_text, user_translation)
-
-#     # Отправляем пользователю оценку
-#     await update.message.reply_text(
-#         f"👤 {update.message.from_user.first_name}, ваш перевод для {sentence_number}-го предложения:\n"
-#         f"✅ Оценка: {feedback}"
-#     )
-
-
-# async def check_user_translation(update: Update, context: CallbackContext):
-#     message_text = update.message.text.strip()  # Убираем лишние пробелы
-#     logging.info(f"📥 Получена команда: {message_text}")  # ✅ Логируем команду
-
-#     # Поддержка и "/перевод", и "/translate"
-#     match = re.match(r"^/(перевод|translate)\s+(\d+)\s+(.+)$", message_text)
-
-#     if not match:
-#         logging.info(f"⚠️ Команда не распознана: {message_text}")  # ✅ Лог ошибки
-#         await update.message.reply_text("❌ Ошибка: Используйте формат `/перевод <номер> <ваш перевод>`")
-#         return
-
-#     sentence_number = int(match.group(2))  # ✅ Исправлено: Берём номер из второй группы
-#     user_translation = match.group(3).strip()  # ✅ Исправлено: Берём перевод из третьей группы
-
-#     logging.info(f"✅ Распознано: Номер={sentence_number}, Перевод={user_translation}")
-
-#     # Получаем список предложений
-#     original_sentences = await get_original_sentences()
-
-#     # Проверяем, существует ли такое предложение
-#     if sentence_number < 1 or sentence_number > len(original_sentences):
-#         await update.message.reply_text(f"❌ Ошибка: Введите номер от 1 до {len(original_sentences)}.")
-#         return
-
-#     original_text = original_sentences[sentence_number - 1]  # ✅ Берём нужное предложение
-
-#     # Проверяем перевод через GPT
-#     feedback = await check_translation(original_text, user_translation)
-
-#     # Отправляем пользователю оценку
-#     await update.message.reply_text(
-#         f"👤 {update.message.from_user.first_name}, ваш перевод для {sentence_number}-го предложения:\n"
-#         f"✅ Оценка: {feedback}"
-#     )
-
-# async def check_user_translation(update: Update, context: CallbackContext):
-#     message_text = update.message.text.strip()
-#     logging.info(f"📥 Получена команда: {message_text}")
-
-#     match = re.match(r"^/(перевод|translate)\s+(\d+)\s+(.+)$", message_text)
-#     if not match:
-#         logging.info(f"⚠️ Команда не распознана: {message_text}")
-#         await update.message.reply_text("❌ Ошибка: Используйте формат `/перевод <номер> <ваш перевод>`")
-#         return
-
-#     sentence_number = int(match.group(2))
-#     user_translation = match.group(3).strip()
-#     user_id = update.message.from_user.id
-#     username = update.message.from_user.first_name
-
-#     logging.info(f"✅ Распознано: Номер={sentence_number}, Перевод={user_translation}")
-
-#     original_sentences = await get_original_sentences()
-
-#     if sentence_number < 1 or sentence_number > len(original_sentences):
-#         await update.message.reply_text(f"❌ Ошибка: Введите номер от 1 до {len(original_sentences)}.")
-#         return
-
-#     original_text = original_sentences[sentence_number - 1]
-
-#     # Проверяем перевод через GPT
-#     # Log the original sentence before checking translation
-#     logging.info(f"📌 Проверка перевода. Оригинальное предложение: {original_text}")
-
-#     # Проверяем перевод через GPT
-#     feedback = await check_translation(original_text, user_translation)
-
-
-#     # Получаем оценку (из строки вида "Оценка: 85/100")
-#     score_match = re.search(r"Оценка:\s*(\d+)/100", feedback)
-#     score = int(score_match.group(1)) if score_match else None
-
-#     # Записываем в базу данных
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-#     cursor.execute(
-#         """
-#         INSERT INTO translations (user_id, username, sentence_id, user_translation, score, feedback)
-#         VALUES (%s, %s, %s, %s, %s, %s);
-#         """,
-#         (user_id, username, sentence_number, user_translation, score, feedback),
-#     )
-#     conn.commit()
-#     cursor.close()
-#     conn.close()
-
-#     # Отправляем пользователю оценку
-#     await update.message.reply_text(
-#         f"👤 {username}, ваш перевод для {sentence_number}-го предложения:\n"
-#         f"✅ Оценка: {feedback}"
-#     )
-
-# async def check_user_translation(update: Update, context: CallbackContext):
-#     if not update.message or not update.message.text:
-#         return  
-
-#     message_text = update.message.text.strip()
-#     logging.info(f"📥 Получена команда: {message_text}")
-
-#     # Удаляем команду `/translate`
-#     translations_text = message_text.replace("/translate", "").strip()
-    
-#     if not translations_text:
-#         await update.message.reply_text("❌ Ошибка: После /translate должен идти список переводов.")
-#         return
-
-#     # Разбираем входной текст на номера предложений и переводы
-#     pattern = re.compile(r"(\d+)\.\s+(.+)")
-#     translations = pattern.findall(translations_text)
-
-#     if not translations:
-#         await update.message.reply_text("❌ Ошибка: Используйте формат: \n\n/translate\n1. <перевод>\n2. <перевод>")
-#         return
-
-#     user_id = update.message.from_user.id
-#     username = update.message.from_user.first_name
-
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-
-#     results = []  # Храним результаты для отправки в Telegram
-
-#     for number_str, user_translation in translations:
-#         sentence_number = int(number_str)
-
-#         # Проверяем, есть ли это предложение в базе
-#         cursor.execute(
-#             "SELECT sentence FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id = %s;",
-#             (sentence_number,),
-#         )
-#         row = cursor.fetchone()
-
-#         if not row:
-#             results.append(f"❌ Ошибка: Предложение с номером {sentence_number} не найдено.")
-#             continue
-
-#         original_text = row[0]
-
-#         # 🔹 **Проверяем, отправлял ли этот пользователь перевод этого предложения**
-#         cursor.execute(
-#             "SELECT id FROM translations WHERE user_id = %s AND sentence_id = %s AND timestamp::date = CURRENT_DATE;",
-#             (user_id, sentence_number)
-#         )
-#         existing_translation = cursor.fetchone()
-
-#         if existing_translation:
-#             results.append(f"⚠️ Вы уже переводили предложение {sentence_number}. Только первый перевод учитывается!")
-#             continue
-
-#         logging.info(f"📌 Проверяем перевод №{sentence_number}: {user_translation}")
-
-#         # Проверяем перевод через GPT
-#         feedback = await check_translation(original_text, user_translation)
-
-#         # Получаем оценку из строки "Оценка: 85/100"
-#         score_match = re.search(r"Оценка:\s*(\d+)/100", feedback)
-#         score = int(score_match.group(1)) if score_match else None
-
-#         # 🔹 **Сохраняем только ПЕРВЫЙ перевод пользователя**
-#         cursor.execute(
-#             """
-#             INSERT INTO translations (user_id, username, sentence_id, user_translation, score, feedback)
-#             VALUES (%s, %s, %s, %s, %s, %s);
-#             """,
-#             (user_id, username, sentence_number, user_translation, score, feedback),
-#         )
-#         conn.commit()
-
-#         results.append(f"📜 **Предложение {sentence_number}**\n🎯 Оценка: {feedback}")
-
-#     cursor.close()
-#     conn.close()
-
-#     # Отправляем пользователю результаты всех переводов
-#     if results:
-#         await update.message.reply_text("\n\n".join(results))
-
 
 
 import re
@@ -838,12 +602,11 @@ async def check_user_translation(update: Update, context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 🔹 Получаем предложения, которые были отправлены ЭТОМУ пользователю
+    # 🔹 Получаем **ID предложений, которые принадлежат пользователю**
     cursor.execute(
-    "SELECT unique_id FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id IN "
-    "(SELECT unique_id FROM daily_sentences WHERE date = CURRENT_DATE);",
-)
-
+        "SELECT unique_id FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = %s;", 
+        (user_id,)
+    )
     allowed_sentences = {row[0] for row in cursor.fetchall()}  # Собираем в set() для быстрого поиска
 
     results = []  # Храним результаты для Telegram
@@ -851,28 +614,28 @@ async def check_user_translation(update: Update, context: CallbackContext):
     for number_str, user_translation in translations:
         sentence_number = int(number_str)
 
-        # 🔹 **Проверяем, имеет ли пользователь право переводить это предложение**
+        # 🔹 **Проверяем, принадлежит ли это предложение пользователю**
         if sentence_number not in allowed_sentences:
             results.append(f"❌ Ошибка: Предложение {sentence_number} вам не принадлежит!")
             continue
 
-        # 🔹 **Проверяем, есть ли это предложение в базе**
+        # 🔹 **Получаем оригинальный текст предложения**
         cursor.execute(
-            "SELECT sentence FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id = %s;",
-            (sentence_number,),
+            "SELECT id, sentence FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id = %s AND user_id = %s;",
+            (sentence_number, user_id),
         )
         row = cursor.fetchone()
 
         if not row:
-            results.append(f"❌ Ошибка: Предложение с номером {sentence_number} не найдено.")
+            results.append(f"❌ Ошибка: Предложение {sentence_number} не найдено.")
             continue
 
-        original_text = row[0]
+        sentence_id, original_text = row
 
         # 🔹 **Проверяем, отправлял ли этот пользователь перевод этого предложения**
         cursor.execute(
             "SELECT id FROM translations WHERE user_id = %s AND sentence_id = %s AND timestamp::date = CURRENT_DATE;",
-            (user_id, sentence_number)
+            (user_id, sentence_id)
         )
         existing_translation = cursor.fetchone()
 
@@ -882,22 +645,26 @@ async def check_user_translation(update: Update, context: CallbackContext):
 
         logging.info(f"📌 Проверяем перевод №{sentence_number}: {user_translation}")
 
-        # Проверяем перевод через GPT
+        # 🔹 **Проверяем перевод через GPT**
+        MAX_FEEDBACK_LENGTH = 1000  # Ограничим длину комментария GPT
         feedback = await check_translation(original_text, user_translation)
 
         # Получаем оценку из строки "Оценка: 85/100"
         score_match = re.search(r"Оценка:\s*(\d+)/100", feedback)
         score = int(score_match.group(1)) if score_match else None
 
-        # 🔹 **Сохраняем только ПЕРВЫЙ перевод пользователя**
+        # 🔹 **Сохраняем перевод в базу**
         cursor.execute(
-            """
-            INSERT INTO translations (user_id, username, sentence_id, user_translation, score, feedback)
-            VALUES (%s, %s, %s, %s, %s, %s);
-            """,
-            (user_id, username, sentence_number, user_translation, score, feedback),
+            "INSERT INTO translations (user_id, username, sentence_id, user_translation, score, feedback) "
+            "VALUES (%s, %s, %s, %s, %s, %s);",
+            (user_id, username, sentence_id, user_translation, score, feedback),
         )
+
         conn.commit()
+
+        # Обрезаем, если слишком длинный
+        if len(feedback) > MAX_FEEDBACK_LENGTH:
+            feedback = feedback[:MAX_FEEDBACK_LENGTH] + "...\n⚠️ Ответ GPT был сокращён."
 
         results.append(f"📜 **Предложение {sentence_number}**\n🎯 Оценка: {feedback}")
 
@@ -905,89 +672,22 @@ async def check_user_translation(update: Update, context: CallbackContext):
     conn.close()
 
     # Отправляем пользователю результаты всех переводов
-    if results:
-        await update.message.reply_text("\n\n".join(results))
+    # Разбиваем сообщение, если оно длинное
+    MAX_MESSAGE_LENGTH = 4000  # Чтобы не рисковать, оставляем небольшой запас
+    message_text = "\n\n".join(results)
+
+    if len(message_text) > MAX_MESSAGE_LENGTH:
+        parts = [message_text[i:i+MAX_MESSAGE_LENGTH] for i in range(0, len(message_text), MAX_MESSAGE_LENGTH)]
+        for part in parts:
+            await update.message.reply_text(part)
+    else:
+        logging.info(f"📩 Длина сообщения: {len(message_text)} символов")
+        await update.message.reply_text(message_text)
 
 
 
 
 
-
-
-
-
-# # === Оценка переводов ===
-# async def handle_message(update: Update, context: CallbackContext):
-#     user_text = update.message.text
-#     original_sentences = await get_original_sentences()
-#     best_score = 0
-#     best_feedback = ""
-
-#     for original_text in original_sentences:
-#         feedback = await check_translation(original_text, user_text)
-#         try:
-#             score = int(feedback.split("/")[0])
-#         except ValueError:
-#             score = 50  
-#         if score > best_score:
-#             best_score = score
-#             best_feedback = feedback
-
-#     await update.message.reply_text(f"✅ Оценка: {best_score}/100\n📝 Комментарий: {best_feedback}")
-
-# === Итог дня в 20:00 ===
-# async def send_daily_summary(context: CallbackContext):
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-
-#     # 1️⃣ Получаем список всех, кто делал переводы
-#     cursor.execute("""
-#         SELECT DISTINCT user_id, username 
-#         FROM translations 
-#         WHERE timestamp::date = CURRENT_DATE;
-#     """)
-#     active_users = {row[0]: row[1] for row in cursor.fetchall()}
-
-#     # 2️⃣ Получаем список всех, кто писал хоть что-то в чат
-#     cursor.execute("""
-#         SELECT DISTINCT user_id, username
-#         FROM messages
-#         WHERE timestamp::date = CURRENT_DATE;
-#     """)  
-#     all_users = {row[0]: row[1] for row in cursor.fetchall()}
-
-#     # 3️⃣ Получаем статистику переводов
-#     cursor.execute("""
-#         SELECT username, COUNT(*), AVG(score) 
-#         FROM translations 
-#         WHERE timestamp::date = CURRENT_DATE 
-#         GROUP BY username 
-#         ORDER BY COUNT(*) DESC;
-#     """)
-#     rows = cursor.fetchall()
-
-#     cursor.close()
-#     conn.close()
-
-#     # Если никто не делал переводов
-#     if not rows:
-#         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Да вы что охуели. Вы же нихуя за сегодня не сделали!")
-#         return
-
-#     summary = "📊 **Итоги дня:**\n\n"
-    
-#     # 4️⃣ Записываем всех, кто делал переводы
-#     for username, count, avg_score in rows:
-#         summary += f"👤 {username}: **{count} перевод(ов)**, средняя оценка: {avg_score:.1f}/100\n"
-
-#     # 5️⃣ Определяем "ленивых", кто писал в чат, но не переводил
-#     lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
-#     if lazy_users:
-#         summary += "\n🚨 **Ленивые мудаки:**\n"
-#         for username in lazy_users.values():
-#             summary += f"👤 {username}: ленивое дерьмо\n"
-
-#     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
 
 async def send_progress_report(context: CallbackContext):
     conn = get_db_connection()
@@ -1032,67 +732,6 @@ async def send_progress_report(context: CallbackContext):
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=progress_report)
 
 
-
-# async def send_daily_summary(context: CallbackContext):
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-
-#     # 1️⃣ Получаем список всех, кто делал переводы
-#     cursor.execute("""
-#         SELECT DISTINCT user_id, username 
-#         FROM translations 
-#         WHERE timestamp::date = CURRENT_DATE;
-#     """)
-#     active_users = {row[0]: row[1] for row in cursor.fetchall()}
-
-#     # 2️⃣ Получаем список всех, кто писал хоть что-то в чат
-#     cursor.execute("""
-#         SELECT DISTINCT user_id, username
-#         FROM messages
-#         WHERE timestamp::date = CURRENT_DATE;
-#     """)  
-#     all_users = {row[0]: row[1] for row in cursor.fetchall()}
-
-#     # 3️⃣ Получаем расширенную статистику переводов
-#     cursor.execute("""
-#         SELECT 
-#             t.username, 
-#             COUNT(t.id) AS переводов,
-#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
-#             COALESCE(EXTRACT(EPOCH FROM (MAX(p.end_time) - MIN(p.start_time)))/60, 9999) AS время_в_минутах,
-#             COALESCE(AVG(t.score), 0) - (COALESCE(EXTRACT(EPOCH FROM (MAX(p.end_time) - MIN(p.start_time)))/60, 9999) * 2) AS итоговый_балл
-#         FROM translations t
-#         JOIN user_progress p ON t.user_id = p.user_id
-#         WHERE t.timestamp::date = CURRENT_DATE AND p.completed = TRUE
-#         GROUP BY t.username
-#         ORDER BY итоговый_балл DESC;
-#     """)
-#     rows = cursor.fetchall()
-
-#     cursor.close()
-#     conn.close()
-
-#     # Если никто не делал переводов
-#     if not rows:
-#         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Да вы что охуели. Вы же нихуя за сегодня не сделали!")
-#         return
-
-#     summary = "📊 **Итоги дня:**\n\n"
-
-#     # 🏆 Рейтинг лучших по итоговому баллу
-#     medals = ["🥇", "🥈", "🥉"]  # Для топ-3
-#     for i, (username, count, avg_score, minutes, final_score) in enumerate(rows):
-#         medal = medals[i] if i < len(medals) else "🔹"
-#         summary += f"{medal} {username}: **{count} переводов**, 🎯 {avg_score:.1f}/100, ⏱ {minutes:.1f} мин, 🏆 {final_score:.1f} баллов\n"
-
-#     # 🚨 Ленивые, кто писал, но не перевел
-#     lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
-#     if lazy_users:
-#         summary += "\n🚨 **Ленивые мудаки:**\n"
-#         for username in lazy_users.values():
-#             summary += f"👤 {username}: ленивое дерьмо\n"
-
-#     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
 
 
 
@@ -1215,40 +854,6 @@ async def send_weekly_summary(context: CallbackContext):
 
 
 
-# Эта функция для автоматичес Отправки сообщений(содержащих предложения) А я хочу переделать чтобы напоминание просто слала. Функция ниже.
-# async def send_morning_tasks(context=None):
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-
-#     # 🔹 Find out how many sentences have already been sent today
-#     cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE;")
-#     start_index = cursor.fetchone()[0]  # Number of already sent sentences
-
-#     # 🔹 Generate new sentences
-#     sentences = await get_original_sentences()
-#     tasks = []
-
-#     for i, sentence in enumerate(sentences, start=start_index + 1):  # Continue numbering
-#         tasks.append(f"{i}. {sentence}")
-#         cursor.execute(
-#             "INSERT INTO daily_sentences (date, sentence, unique_id) VALUES (CURRENT_DATE, %s, %s);",
-#             (sentence, i),
-#         )
-
-#     conn.commit()
-#     cursor.close()
-#     conn.close()
-
-#     # 🔹 Format the message
-#     message = f"🌅 **Here is your morning task!**\n\n" + "\n".join(tasks) + \
-#               "\n\nFormat your reply: `/translate <number> <your translation>`"
-
-#     if context:
-#         bot = context.bot
-#     else:
-#         bot = application.bot
-
-#     await bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
 
 
 async def send_morning_tasks(context: CallbackContext):
@@ -1267,82 +872,9 @@ async def send_morning_tasks(context: CallbackContext):
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
 
 
-# === Запуск бота ===
-# def main():
-#     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-#     application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Привет! Жди задания завтра!")))
-#     application.add_handler(CommandHandler("newtasks", set_new_tasks))
-#     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-#     scheduler = BackgroundScheduler()
-#     scheduler.add_job(lambda: application.create_task(send_morning_tasks(None)), "cron", hour=8, minute=0)
-#     scheduler.add_job(lambda: application.create_task(send_morning_tasks(None)), "cron", hour=20, minute=55)
-#     scheduler.add_job(lambda: application.create_task(send_morning_tasks(None)), "cron", hour=21, minute=31)
-#     scheduler.add_job(lambda: application.create_task(send_morning_tasks(None)), "cron", hour=21, minute=50)
-#     scheduler.add_job(lambda: application.create_task(send_morning_tasks(None)), "cron", hour=22, minute=20)
-#     scheduler.add_job(lambda: application.create_task(send_daily_summary(None)), "cron", hour=23, minute=10)
-#     scheduler.start()
-    
-#     application.run_polling()
-
-# if __name__ == "__main__":
-#     main()
 
 import asyncio
 
-# === Запуск бота ===
-# def main():
-#     global application
-#     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-#     application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Hey! Wait until tomorow for your sentances!")))
-#     application.add_handler(CommandHandler("newtasks", set_new_tasks))
-#     application.add_handler(CommandHandler("translate", check_user_translation))
-#     application.add_handler(CommandHandler("getmore", send_more_tasks))  # ✅ Adding /getmore command
-#     application.add_handler(CommandHandler("letsgo", letsgo))
-#     application.add_handler(CommandHandler("done", done))
-
-
-    
-#     # 🔹 Логирование всех сообщений (нужно для учета ленивых)
-#     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))  
-
-#     scheduler = BackgroundScheduler()
-
-#     def run_async_job(async_func, context=None):
-#         if context is None:
-#             context = CallbackContext(application=application)  # Создаем `context`, если его нет
-
-#         try:
-#             loop = asyncio.get_running_loop()  # ✅ Берем уже работающий event loop
-#         except RuntimeError:
-#             loop = asyncio.new_event_loop()  # ❌ В потоке `apscheduler` нет loop — создаем новый
-#             asyncio.set_event_loop(loop)
-
-#         loop.run_until_complete(async_func(context))  # ✅ Теперь event loop всегда работает
-
-#     # 🔹 Запуск утренних заданий
-#     scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=6, minute=1)
-#     scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=15, minute=1)
-
-    
-
-#     # 🔹 Запуск итогов дня
-#     scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=22)
-#     #week results
-#     scheduler.add_job(
-#     lambda: run_async_job(send_weekly_summary, CallbackContext(application=application)), 
-#     "cron", day_of_week="sun", hour=22, minute=0
-# )
-
-
-#     scheduler.start()
-    
-#     application.run_polling()
-
-# if __name__ == "__main__":
-#     main()
 
 async def start(update: Update, context: CallbackContext):
     message = (
@@ -1358,6 +890,100 @@ async def start(update: Update, context: CallbackContext):
     await update.message.reply_text(message)
 
 
+
+
+
+
+
+# async def user_stats(update: Update, context: CallbackContext):
+#     user_id = update.message.from_user.id
+#     username = update.message.from_user.first_name
+
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+
+#     # 📌 Получаем накопительную статистику за сегодняшний день
+#     cursor.execute("""
+#         SELECT 
+#             COUNT(t.id) AS переводов, 
+#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
+#             COALESCE((
+#                 SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+#                 FROM user_progress p
+#                 WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
+#             ), 0) AS время_в_минутах,
+#             (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+#             COALESCE(AVG(t.score), 0) 
+#                 - (COALESCE((
+#                     SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+#                     FROM user_progress p
+#                     WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
+#                 ), 0) * 2) 
+#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id)) * 20 
+#                 AS итоговый_балл
+#         FROM translations t
+#         WHERE t.user_id = %s AND t.timestamp::date = CURRENT_DATE
+#         GROUP BY t.user_id;
+#     """, (user_id,))
+
+#     today_stats = cursor.fetchone()
+
+#     # 📌 Обновляем расчёт итогового балла за неделю с учётом пропущенных предложений
+#     cursor.execute("""
+#         SELECT 
+#             COUNT(t.id) AS всего_переводов,
+#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
+#             COALESCE((
+#                 SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+#                 FROM user_progress p
+#                 WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
+#             ), 0) AS общее_время_в_минутах,
+#             COALESCE(AVG(t.score), 0) 
+#                 - (COALESCE((
+#                     SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+#                     FROM user_progress p
+#                     WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
+#                 ), 0) * 2) 
+#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
+#                 AS итоговый_балл
+#         FROM translations t
+#         WHERE t.user_id = %s AND t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
+#         GROUP BY t.user_id;
+#     """, (user_id,))
+
+#     weekly_stats = cursor.fetchone()
+
+#     cursor.close()
+#     conn.close()
+
+#     # 📌 Формируем ответ
+#     if today_stats:
+#         today_text = (
+#             f"📅 **Сегодняшняя статистика ({username})**\n"
+#             f"🔹 Переведено: {today_stats[0]}\n"
+#             f"🎯 Средняя оценка: {today_stats[1]:.1f}/100\n"
+#             f"⏱ Время: {today_stats[2]:.1f} мин\n"
+#             f"🚨 Пропущено: {today_stats[3]}\n"
+#             f"🏆 Итоговый балл: {today_stats[4]:.1f}\n"
+#         )
+#     else:
+#         today_text = f"📅 **Сегодняшняя статистика ({username})**\n❌ Нет данных (вы ещё не переводили)."
+
+#     if weekly_stats:
+#         weekly_text = (
+#             f"\n📆 **Статистика за неделю**\n"
+#             f"🔹 Переведено: {weekly_stats[0]}\n"
+#             f"🎯 Средняя оценка: {weekly_stats[1]:.1f}/100\n"
+#             f"⏱ Общее время: {weekly_stats[2]:.1f} мин\n"
+#             f"🚨 Пропущено за неделю: {weekly_stats[0] - today_stats[0]}\n"
+#             f"🏆 Итоговый балл: {weekly_stats[3]:.1f}\n"
+#         )
+#     else:
+#         weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
+
+#     await update.message.reply_text(today_text + weekly_text)
+
+
 async def user_stats(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
     username = update.message.from_user.first_name
@@ -1365,44 +991,62 @@ async def user_stats(update: Update, context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 📌 Получаем статистику за сегодняшний день
+    # 📌 Получаем накопительную статистику за сегодняшний день
     cursor.execute("""
-        SELECT COUNT(t.id) AS переводов, 
-               COALESCE(AVG(t.score), 0) AS средняя_оценка,
-               COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS время_в_минутах,
-               (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id) AS пропущено,
-               COALESCE(AVG(t.score), 0) 
-                   - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2) 
-                   - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id)) * 10 
-                   AS итоговый_балл
+        SELECT 
+            COUNT(t.id) AS переводов, 
+            COALESCE(AVG(t.score), 0) AS средняя_оценка,
+            COALESCE((
+                SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+                FROM user_progress p
+                WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
+            ), 0) AS время_в_минутах,
+            (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+            COALESCE(AVG(t.score), 0) 
+                - (COALESCE((
+                    SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+                    FROM user_progress p
+                    WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
+                ), 0) * 2) 
+                - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id)) * 20 
+                AS итоговый_балл
         FROM translations t
-        JOIN user_progress p ON t.user_id = p.user_id
-        WHERE t.user_id = %s AND t.timestamp::date = CURRENT_DATE AND p.completed = TRUE
+        WHERE t.user_id = %s AND t.timestamp::date = CURRENT_DATE
         GROUP BY t.user_id;
     """, (user_id,))
-    
+
     today_stats = cursor.fetchone()
 
-    # 📌 Получаем статистику за неделю
+    # 📌 Добавляем правильный расчёт пропущенных за неделю!
     cursor.execute("""
-        SELECT COUNT(t.id) AS всего_переводов,
-               COALESCE(AVG(t.score), 0) AS средняя_оценка,
-               COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS общее_время_в_минутах,
-               COALESCE(AVG(t.score), 0) 
-                   - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2) AS итоговый_балл
+        SELECT 
+            COUNT(t.id) AS всего_переводов,
+            COALESCE(AVG(t.score), 0) AS средняя_оценка,
+            COALESCE((
+                SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+                FROM user_progress p
+                WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
+            ), 0) AS общее_время_в_минутах,
+            (SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id) AS пропущено_за_неделю,
+            COALESCE(AVG(t.score), 0) 
+                - (COALESCE((
+                    SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+                    FROM user_progress p
+                    WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
+                ), 0) * 2) 
+                - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
+                AS итоговый_балл
         FROM translations t
-        JOIN user_progress p ON t.user_id = p.user_id
         WHERE t.user_id = %s AND t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
-        AND p.completed = TRUE
         GROUP BY t.user_id;
     """, (user_id,))
-    
+
     weekly_stats = cursor.fetchone()
 
     cursor.close()
     conn.close()
 
-    # Формируем ответ
+    # 📌 Формируем ответ
     if today_stats:
         today_text = (
             f"📅 **Сегодняшняя статистика ({username})**\n"
@@ -1421,12 +1065,21 @@ async def user_stats(update: Update, context: CallbackContext):
             f"🔹 Переведено: {weekly_stats[0]}\n"
             f"🎯 Средняя оценка: {weekly_stats[1]:.1f}/100\n"
             f"⏱ Общее время: {weekly_stats[2]:.1f} мин\n"
-            f"🏆 Итоговый балл: {weekly_stats[3]:.1f}\n"
+            f"🚨 Пропущено за неделю: {weekly_stats[3]}\n"
+            f"🏆 Итоговый балл: {weekly_stats[4]:.1f}\n"
         )
     else:
         weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
 
     await update.message.reply_text(today_text + weekly_text)
+
+
+
+
+
+
+
+
 
 import datetime
 import pytz
@@ -1436,6 +1089,71 @@ async def debug_timezone(update: Update, context: CallbackContext):
     await update.message.reply_text(
         f"🕒 Текущее UTC-время на сервере: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}"
     )
+
+
+from telegram import Update
+from telegram.ext import CommandHandler, CallbackContext
+import psycopg2
+import os
+
+# Функция для сброса данных по ID
+def reset_user_data(user_id):
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    cursor = conn.cursor()
+
+    # Удаляем переводы за сегодня
+    cursor.execute("DELETE FROM translations WHERE user_id = %s AND timestamp::date = CURRENT_DATE;", (user_id,))
+
+    # Удаляем прогресс пользователя
+    cursor.execute("DELETE FROM user_progress WHERE user_id = %s;", (user_id,))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# Обработчик команды /resetme <ID>
+# === Функция для очистки данных пользователя ===
+def reset_user_data(user_id):
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    cursor = conn.cursor()
+
+    # Удаляем переводы за сегодня
+    cursor.execute("DELETE FROM translations WHERE user_id = %s AND timestamp::date = CURRENT_DATE;", (user_id,))
+
+    # Удаляем прогресс пользователя
+    cursor.execute("DELETE FROM user_progress WHERE user_id = %s;", (user_id,))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# === Обработчик команды /resetme (для очистки данных) ===
+async def reset_user_command(update: Update, context: CallbackContext):
+    user = update.message.from_user
+    chat_id = update.message.chat_id
+
+    # 🔹 Если ID передан, то админ может сбрасывать другого пользователя
+    if context.args:
+        ADMIN_ID = 117649764  # Твой Telegram ID (замени на свой)
+        if user.id != ADMIN_ID:
+            await update.message.reply_text("❌ У вас нет прав на выполнение этой команды!")
+            return
+        try:
+            user_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ Ошибка: ID должен быть числом!")
+            return
+    else:
+        # Если ID не указан, сбрасываем данные **самого пользователя**
+        user_id = user.id
+
+    # 🔹 Выполняем сброс данных
+    reset_user_data(user_id)
+    await update.message.reply_text(f"✅ Данные пользователя {user_id} сброшены!")
+    print(f"✅ Данные пользователя {user_id} сброшены!")
+
+
+
 
 
 
@@ -1452,6 +1170,7 @@ def main():
     application.add_handler(CommandHandler("yes", confirm_done))
     application.add_handler(CommandHandler("stats", user_stats))  # ✅ Теперь можно смотреть статистику
     application.add_handler(CommandHandler("time", debug_timezone))
+    application.add_handler(CommandHandler("resetme", reset_user_command))  # <== Добавили команду для сброса данных
 
 
     # 🔹 Логирование всех сообщений (нужно для учета ленивых)
@@ -1494,7 +1213,7 @@ def main():
     # ✅ Запуск итогов недели
     scheduler.add_job(
         lambda: run_async_job(send_weekly_summary, CallbackContext(application=application)), 
-        "cron", day_of_week="sun", hour=21, minute=0
+        "cron", day_of_week="sun", hour=20, minute=0
     )
 
     scheduler.start()

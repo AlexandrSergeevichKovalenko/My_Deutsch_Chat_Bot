@@ -4,6 +4,7 @@ check_gpt4.py
 compile_docker_comand.txt
 test.py
 test_db.py
+test_db_copy.py
 bot_doesnotwork.py
 basic_version_bot.py
 bot_without_time_good_copy.py
