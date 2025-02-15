@@ -164,19 +164,20 @@ async def log_message(update: Update, context: CallbackContext):
 
 async def send_morning_reminder(context: CallbackContext):
     message = (
-        "🌅 **Доброе утро, переводчики!**\n\n"
+        "🌅 **Доброе утро, всем кроме Кончиты!**\n\n"
         "Чтобы принять участие в переводе, напишите команду `/letsgo`. После этого вам будут высланы предложения.\n\n"
         "📌 **Важно:**\n"
         "🔹 Переводите максимально точно и быстро —общение время вашего перевода будет отниматься от количества набранного вами итогового среднего балла(т.е. Чем дольше переводите тем больше штраф)!\n"
-        "🔹 После перевода всех предложений обязательно выполните `/done`.\n"
+        "🔹 Команда `/letsgo` используется только для получения первой партии предложений. Если впоследствии захотите участвовать ещё пишите `/getmore`.\n"
+        "🔹 После перевода всех предложений обязательно выполните `/done` и подтвердите окончание нажатием `/yes`.\n"
         "🔹 В 09:00, 12:00 и 15:00 будут **промежуточные итоги** по каждому участнику.\n"
-        "🔹 Итоговые результаты дня отправляются в 22:00."
+        "🔹 Итоговые результаты дня отправляются в 23:30."
     )
     
     # 📌 Список команд
     commands = (
         "📜 **Доступные команды:**\n"
-        "/letsgo - Получить задания на перевод\n"
+        "/letsgo - Получить первую партию заданий на перевод\n"
         "/done - Завершить перевод (фиксирует время)\n"
         "/translate - Отправить переводы\n"
         "/getmore - Получить дополнительные предложения\n"
@@ -204,7 +205,7 @@ async def letsgo(update: Update, context: CallbackContext):
 
     if row:
         logging.info(f"⏳ Пользователь {username} ({user_id}) уже начал перевод.")
-        await update.message.reply_text("❌ Вы уже начали перевод! Завершите его перед повторным запуском.")
+        await update.message.reply_text("❌ Вы уже начали перевод! Завершите его перед повторным запуском. Если вы уже выполняли задания и хотите ещё используйте '/getmore'.")
         cursor.close()
         conn.close()
         return
@@ -365,7 +366,7 @@ async def confirm_done(update: Update, context: CallbackContext):
     await update.message.reply_text(
         f"✅ **Перевод завершён!**\n\n"
         f"📜 **Вы перевели:** {translated_count}/{total_sentences} предложений.\n"
-        f"🚨 **Штраф за пропущенные:** -{penalty} баллов.\n"
+        f"🚨 **Штраф за не выполненные:** -{penalty} баллов.\n"
         f"🏆 Итог будет учтён в вечернем рейтинге!"
     )
 
@@ -386,6 +387,7 @@ async def generate_sentences():
     - Используй **пассивный залог** и **Konjunktiv II** хотя бы в половине предложений.
     - Каждое предложение должно быть **на отдельной строке**.
     - **НЕ добавляй перевод!** Только оригинальные русские предложения.
+    - Предложения должны содержать часто употребительную в повседневной жизни лексику и грамматику.
 
     **Пример формата вывода:**
     Этот город был основан более 300 лет назад.
@@ -395,6 +397,7 @@ async def generate_sentences():
     Было бы лучше, если бы он согласился на это предложение.
     Нам сказали, что проект будет завершен через неделю.
     Если бы он мог говорить на немецком, он бы легко нашел работу.
+
     """
 
     for attempt in range(5):  # Попробовать до 5 раз
@@ -544,15 +547,16 @@ async def check_translation(original_text, user_translation):
     - Перевод пользователя (на немецком): "{user_translation}"
 
     **Требования к проверке**:
-    1. **Выставь оценку от 0 до 100** (по уровню точности, грамматики и стиля, Соответствие содержанию, При полном несоответствии содержанию оценка ноль).
-    2. ** Детально объясни ошибки**, если они есть (не более 2-3 предложений). Обязательно объясни грамматическую конструкцию И как она строится должна правильно.
-    3. **Дай рекомендацию**, как улучшить перевод(В случае если перевод не верен). Обязательно укажи правильный вариант перевода(это должен быть наиболее часто встречаемый перевод).
-    Можешь также указать список слов-синонимов, которые можно было бы использовать в данном переводе(только для слов уровня B2 И C1).
+    1. **Выставь оценку от 0 до 100** (в соответствии оригинальному содержанию, правильному набору лексики, корректности грамматической конструкции и стиля. При полном несоответствии содержанию оценка ноль).
+    2. ** Детально объясни ошибки**, если они есть (Не более двух предложений). **Обязательно объясни как правильно строится основная грамматическая конструкция данного предложения**.
+    3. **Обязательно укажи правильный вариант перевода (это должен быть наиболее часто встречаемый максимально аутентичный перевод)**.
+    4. Укажи по два слов-синонимов и слов-антонимов (Исключительно для смысловых глаголов либо слов уровня B2 И C1).
 
     **Формат ответа (без лишних символов, только текст!)**:
     Оценка: X/100
     Ошибки: ...
-    Рекомендация: ...
+    Верный перевод: ...
+    Синонимы/Антонимы: ...
     """
 
     for attempt in range(3):  # До 3-х попыток при ошибках API
@@ -740,6 +744,14 @@ async def send_daily_summary(context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    # ✅ 1️⃣ Автоматически завершаем всех, кто не завершил перевод
+    cursor.execute("""
+        UPDATE user_progress 
+        SET end_time = NOW(), completed = TRUE 
+        WHERE completed = FALSE;
+    """)
+    conn.commit()
+
     # 1️⃣ Получаем список всех, кто делал переводы
     cursor.execute("""
         SELECT DISTINCT user_id, username 
@@ -781,7 +793,7 @@ async def send_daily_summary(context: CallbackContext):
 
     # Если никто не сделал перевод
     if not rows:
-        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Да вы что охуели. Вы же нихуя за сегодня не сделали!")
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Да вы что ох*ели, друзья! Вы же нихуя за сегодня не сделали!")
         return
 
     summary = "📊 **Итоги дня:**\n\n"
@@ -789,18 +801,22 @@ async def send_daily_summary(context: CallbackContext):
     # 🏆 Рейтинг лучших по итоговому баллу
     medals = ["🥇", "🥈", "🥉"]
     for i, (username, count, avg_score, minutes, missed, final_score) in enumerate(rows):
-        medal = medals[i] if i < len(medals) else "🔹"
+        medal = medals[i] if i < len(medals) else "💩"
         summary += (
-            f"{medal} {username}: **{count} переводов**, 🎯 {avg_score:.1f}/100, ⏱ {minutes:.1f} мин, "
-            f"🚨 Пропущено: {missed}, 🏆 {final_score:.1f} баллов\n"
+            f"{medal} **{username}**\n"
+            f"📜 Переведено: **{count}**\n"
+            f"🎯 Средняя оценка: **{avg_score:.1f}/100**\n"
+            f"⏱ Время: **{minutes:.1f} мин**\n"
+            f"🚨 Не переведено: **{missed}**\n"
+            f"🏆 Итоговый балл: **{final_score:.1f}**\n\n"
         )
 
     # 🚨 Ленивые, кто писал в чат, но не перевел
     lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
     if lazy_users:
-        summary += "\n🚨 **Ленивые мудаки:**\n"
+        summary += "\n🚨 **Ленивые засранцы:**\n"
         for username in lazy_users.values():
-            summary += f"👤 {username}: ленивое дерьмо\n"
+            summary += f"👤 {username}: ленивое дер*мо\n"
 
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
 
@@ -817,7 +833,11 @@ async def send_weekly_summary(context: CallbackContext):
             COUNT(t.id) AS всего_переводов,
             COALESCE(AVG(t.score), 0) AS средняя_оценка,
             COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS общее_время_в_минутах,
-            COALESCE(AVG(t.score), 0) - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2) AS итоговый_балл
+            (SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+            COALESCE(AVG(t.score), 0) 
+                - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2)
+                - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
+                AS итоговый_балл
         FROM translations t
         JOIN user_progress p ON t.user_id = p.user_id
         WHERE t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
@@ -837,9 +857,16 @@ async def send_weekly_summary(context: CallbackContext):
     summary = "🏆 **Итоги недели:**\n\n"
 
     medals = ["🥇", "🥈", "🥉"]  # Для топ-3
-    for i, (username, count, avg_score, total_minutes, final_score) in enumerate(rows):
-        medal = medals[i] if i < len(medals) else "🔹"
-        summary += f"{medal} {username}: **{count} переводов**, 🎯 {avg_score:.1f}/100, ⏱ {total_minutes:.1f} мин, 🏆 {final_score:.1f} баллов\n"
+    for i, (username, count, avg_score, minutes, missed, final_score) in enumerate(rows):
+        medal = medals[i] if i < len(medals) else "💩"
+        summary += (
+            f"{medal} **{username}**\n"
+            f"📜 Переведено: **{count}**\n"
+            f"🎯 Средняя оценка: **{avg_score:.1f}/100**\n"
+            f"⏱ Время: **{minutes:.1f} мин**\n"
+            f"🚨 Не переведено: **{missed}**\n"
+            f"🏆 Итоговый балл: **{final_score:.1f}**\n\n"
+        )
 
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
 
@@ -878,7 +905,7 @@ import asyncio
 
 async def start(update: Update, context: CallbackContext):
     message = (
-        "👋 **Привет!**\n"
+        "👋 **Привет всем кроме Konchita!**\n"
         "Добро пожаловать в переводческий челлендж!\n\n"
         "📝 **Доступные команды:**\n"
         "✅ `/letsgo` - Начать перевод\n"
@@ -890,98 +917,6 @@ async def start(update: Update, context: CallbackContext):
     await update.message.reply_text(message)
 
 
-
-
-
-
-
-# async def user_stats(update: Update, context: CallbackContext):
-#     user_id = update.message.from_user.id
-#     username = update.message.from_user.first_name
-
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-
-#     # 📌 Получаем накопительную статистику за сегодняшний день
-#     cursor.execute("""
-#         SELECT 
-#             COUNT(t.id) AS переводов, 
-#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
-#             COALESCE((
-#                 SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
-#                 FROM user_progress p
-#                 WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
-#             ), 0) AS время_в_минутах,
-#             (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
-#             COALESCE(AVG(t.score), 0) 
-#                 - (COALESCE((
-#                     SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
-#                     FROM user_progress p
-#                     WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
-#                 ), 0) * 2) 
-#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id)) * 20 
-#                 AS итоговый_балл
-#         FROM translations t
-#         WHERE t.user_id = %s AND t.timestamp::date = CURRENT_DATE
-#         GROUP BY t.user_id;
-#     """, (user_id,))
-
-#     today_stats = cursor.fetchone()
-
-#     # 📌 Обновляем расчёт итогового балла за неделю с учётом пропущенных предложений
-#     cursor.execute("""
-#         SELECT 
-#             COUNT(t.id) AS всего_переводов,
-#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
-#             COALESCE((
-#                 SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
-#                 FROM user_progress p
-#                 WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
-#             ), 0) AS общее_время_в_минутах,
-#             COALESCE(AVG(t.score), 0) 
-#                 - (COALESCE((
-#                     SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
-#                     FROM user_progress p
-#                     WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
-#                 ), 0) * 2) 
-#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
-#                 AS итоговый_балл
-#         FROM translations t
-#         WHERE t.user_id = %s AND t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
-#         GROUP BY t.user_id;
-#     """, (user_id,))
-
-#     weekly_stats = cursor.fetchone()
-
-#     cursor.close()
-#     conn.close()
-
-#     # 📌 Формируем ответ
-#     if today_stats:
-#         today_text = (
-#             f"📅 **Сегодняшняя статистика ({username})**\n"
-#             f"🔹 Переведено: {today_stats[0]}\n"
-#             f"🎯 Средняя оценка: {today_stats[1]:.1f}/100\n"
-#             f"⏱ Время: {today_stats[2]:.1f} мин\n"
-#             f"🚨 Пропущено: {today_stats[3]}\n"
-#             f"🏆 Итоговый балл: {today_stats[4]:.1f}\n"
-#         )
-#     else:
-#         today_text = f"📅 **Сегодняшняя статистика ({username})**\n❌ Нет данных (вы ещё не переводили)."
-
-#     if weekly_stats:
-#         weekly_text = (
-#             f"\n📆 **Статистика за неделю**\n"
-#             f"🔹 Переведено: {weekly_stats[0]}\n"
-#             f"🎯 Средняя оценка: {weekly_stats[1]:.1f}/100\n"
-#             f"⏱ Общее время: {weekly_stats[2]:.1f} мин\n"
-#             f"🚨 Пропущено за неделю: {weekly_stats[0] - today_stats[0]}\n"
-#             f"🏆 Итоговый балл: {weekly_stats[3]:.1f}\n"
-#         )
-#     else:
-#         weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
-
-#     await update.message.reply_text(today_text + weekly_text)
 
 
 async def user_stats(update: Update, context: CallbackContext):
@@ -1072,10 +1007,6 @@ async def user_stats(update: Update, context: CallbackContext):
         weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
 
     await update.message.reply_text(today_text + weekly_text)
-
-
-
-
 
 
 
@@ -1208,7 +1139,7 @@ def main():
         )
 
     # ✅ Запуск итогов дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=30)
 
     # ✅ Запуск итогов недели
     scheduler.add_job(
