@@ -167,7 +167,7 @@ async def send_morning_reminder(context: CallbackContext):
         "🌅 **Доброе утро, всем кроме Кончиты!**\n\n"
         "Чтобы принять участие в переводе, напишите команду `/letsgo`. После этого вам будут высланы предложения.\n\n"
         "📌 **Важно:**\n"
-        "🔹 Переводите максимально точно и быстро —общение время вашего перевода будет отниматься от количества набранного вами итогового среднего балла(т.е. Чем дольше переводите тем больше штраф)!\n"
+        "🔹 Переводите максимально точно и быстро — общение время вашего перевода будет отниматься от набранного вами среднего балла. Итог рассчитывается таким образом: суммируем все полученные баллы за перевод делим на количество переведённых предложений и вычитаем время (в минутах) потраченное на перевод всех предложений - чем дольше переводите тем больше штраф)!\n"
         "🔹 Команда `/letsgo` используется только для получения первой партии предложений. Если впоследствии захотите участвовать ещё пишите `/getmore`.\n"
         "🔹 После перевода всех предложений обязательно выполните `/done` и подтвердите окончание нажатием `/yes`.\n"
         "🔹 В 09:00, 12:00 и 15:00 будут **промежуточные итоги** по каждому участнику.\n"
@@ -702,7 +702,7 @@ async def send_progress_report(context: CallbackContext):
     total_sentences = cursor.fetchone()[0]
 
     if total_sentences == 0:
-        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="⚠️ Сегодня ещё нет заданий.")
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="⚠️ Сегодня ещё никому не выдавались предложения для перевода. Вы что все спите?")
         return
 
     # Получаем статистику по пользователям
@@ -835,7 +835,7 @@ async def send_weekly_summary(context: CallbackContext):
             COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS общее_время_в_минутах,
             (SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
             COALESCE(AVG(t.score), 0) 
-                - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 2)
+                - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 1)
                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
                 AS итоговый_балл
         FROM translations t
@@ -882,11 +882,10 @@ async def send_weekly_summary(context: CallbackContext):
 
 
 
-
 async def send_morning_tasks(context: CallbackContext):
     message = (
-        "🌅 ** Доброго времени суток, переводчики!**\n\n"
-        "Не забудьте начать перевод! Используйте команду `/letsgo`.\n"
+        "🌅 ** Не забудьте начать перевод!**\n\n"
+        "Используйте для этого команду `/letsgo`.\n"
         "После этого вам будут отправлены индивидуальные предложения.\n\n"
         "📝 **Команды на день:**\n"
         "✅ `/letsgo` - Получить задания\n"
@@ -1124,12 +1123,12 @@ def main():
     # ✅ Добавляем задачу в `scheduler` ДЛЯ УТРА
     scheduler.add_job(
         lambda: run_async_job(send_morning_reminder, CallbackContext(application=application)),
-        "cron", hour=6, minute=0
+        "cron", hour=5, minute=0
     )
 
     # ✅ Запуск утренних заданий
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=5, minute=1)
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=14, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=7, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=16, minute=1)
 
     # ✅ Запуск промежуточных итогов
     for hour in [8, 11, 14]:
