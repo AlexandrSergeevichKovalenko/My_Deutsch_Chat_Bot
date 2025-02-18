@@ -1610,7 +1610,7 @@ def main():
         )
 
     # ✅ Запуск итогов дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=30)
+    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=58)
 
     # ✅ Запуск итогов недели
     scheduler.add_job(
