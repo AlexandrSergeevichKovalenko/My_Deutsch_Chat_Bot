@@ -191,6 +191,72 @@ async def send_morning_reminder(context: CallbackContext):
 
 
 
+# async def letsgo(update: Update, context: CallbackContext):
+#     user = update.message.from_user
+#     user_id = user.id
+#     username = user.username or user.first_name
+
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+
+#     # Проверяем, не запустил ли уже пользователь перевод
+#     cursor.execute("SELECT start_time FROM user_progress WHERE user_id = %s;", (user_id,))
+#     row = cursor.fetchone()
+
+#     if row:
+#         logging.info(f"⏳ Пользователь {username} ({user_id}) уже начал перевод.")
+#         await update.message.reply_text("❌ Вы уже начали перевод! Завершите его перед повторным запуском. Если вы уже выполняли задания и хотите ещё используйте '/getmore'.")
+#         cursor.close()
+#         conn.close()
+#         return
+
+#     # Фиксируем время старта
+#     cursor.execute(
+#         "INSERT INTO user_progress (user_id, username, start_time) VALUES (%s, %s, NOW()) "
+#         "ON CONFLICT (user_id) DO UPDATE SET start_time = NOW(), completed = FALSE;",
+#         (user_id, username)
+#     )
+#     conn.commit()
+
+#     # ✅ Убираем пустые строки из списка предложений
+#     sentences = [s.strip() for s in await get_original_sentences() if s.strip()]
+
+#     # Проверяем, есть ли предложения (если нет, выдаем ошибку)
+#     if not sentences:
+#         await update.message.reply_text("❌ Ошибка: не удалось получить предложения. Попробуйте позже.")
+#         cursor.close()
+#         conn.close()
+#         return
+
+#     # ✅ **Исправленный код: уникальный `unique_id`**
+#     tasks = []
+#     sentence_ids = []
+#     for i, sentence in enumerate(sentences, start=1):
+#         if not sentence.strip(): # ✅ Пропускаем пустые строки
+#             continue
+#         cursor.execute(
+#             "INSERT INTO daily_sentences (date, sentence, unique_id, user_id) VALUES (CURRENT_DATE, %s, %s, %s) RETURNING id;",
+#             (sentence, i, user_id),  # ✅ Теперь `unique_id` правильно назначается
+#         )
+#         daily_id = cursor.fetchone()[0]  # Получаем ID предложения из базы
+#         sentence_ids.append(daily_id)
+#         tasks.append(f"{i}. {sentence}")  # Формируем список предложений для пользователя
+
+#     conn.commit()
+#     cursor.close()
+#     conn.close()
+
+#     logging.info(f"🚀 Пользователь {username} ({user_id}) начал перевод. Записано {len(tasks)} предложений.")
+
+#     # 📜 **Формируем красивый текстовый список предложений**
+#     tasks_text = "\n".join(tasks)
+
+#     await update.message.reply_text(
+#         f"🚀 **Вы начали перевод! Время пошло.**\n\n"
+#         f"📜 **Ваши предложения:**\n{tasks_text}\n\n"
+#         "✏️ **Отправьте все переводы и завершите с помощью** `/done`."
+#     )
+
 async def letsgo(update: Update, context: CallbackContext):
     user = update.message.from_user
     user_id = user.id
@@ -199,18 +265,29 @@ async def letsgo(update: Update, context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Проверяем, не запустил ли уже пользователь перевод
-    cursor.execute("SELECT start_time FROM user_progress WHERE user_id = %s;", (user_id,))
+    # Проверяем, не запустил ли уже пользователь перевод (но только за СЕГОДНЯ!)
+    cursor.execute("""
+        SELECT start_time FROM user_progress 
+        WHERE user_id = %s AND start_time::date = CURRENT_DATE;
+    """, (user_id,))
     row = cursor.fetchone()
 
     if row:
-        logging.info(f"⏳ Пользователь {username} ({user_id}) уже начал перевод.")
+        logging.info(f"⏳ Пользователь {username} ({user_id}) уже начал перевод сегодня.")
         await update.message.reply_text("❌ Вы уже начали перевод! Завершите его перед повторным запуском. Если вы уже выполняли задания и хотите ещё используйте '/getmore'.")
         cursor.close()
         conn.close()
         return
 
-    # Фиксируем время старта
+    # ✅ **Автоматически завершаем вчерашние сессии**
+    cursor.execute("""
+        UPDATE user_progress 
+        SET end_time = NOW(), completed = TRUE 
+        WHERE user_id = %s AND start_time::date < CURRENT_DATE AND completed = FALSE;
+    """, (user_id,))
+    conn.commit()
+
+    # ✅ **Теперь фиксируем старт новой сессии**
     cursor.execute(
         "INSERT INTO user_progress (user_id, username, start_time) VALUES (%s, %s, NOW()) "
         "ON CONFLICT (user_id) DO UPDATE SET start_time = NOW(), completed = FALSE;",
@@ -218,29 +295,26 @@ async def letsgo(update: Update, context: CallbackContext):
     )
     conn.commit()
 
-    # ✅ Убираем пустые строки из списка предложений
+    # ✅ **Выдаём новые предложения**
     sentences = [s.strip() for s in await get_original_sentences() if s.strip()]
 
-    # Проверяем, есть ли предложения (если нет, выдаем ошибку)
     if not sentences:
         await update.message.reply_text("❌ Ошибка: не удалось получить предложения. Попробуйте позже.")
         cursor.close()
         conn.close()
         return
 
-    # ✅ **Исправленный код: уникальный `unique_id`**
+    # Определяем стартовый индекс (если пользователь делал /getmore)
+    cursor.execute("SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = %s;", (user_id,))
+    last_index = cursor.fetchone()[0]  
+
     tasks = []
-    sentence_ids = []
-    for i, sentence in enumerate(sentences, start=1):
-        if not sentence.strip(): # ✅ Пропускаем пустые строки
-            continue
+    for i, sentence in enumerate(sentences, start=last_index + 1):  # **Исправлено!**
         cursor.execute(
-            "INSERT INTO daily_sentences (date, sentence, unique_id, user_id) VALUES (CURRENT_DATE, %s, %s, %s) RETURNING id;",
-            (sentence, i, user_id),  # ✅ Теперь `unique_id` правильно назначается
+            "INSERT INTO daily_sentences (date, sentence, unique_id, user_id) VALUES (CURRENT_DATE, %s, %s, %s);",
+            (sentence, i, user_id),
         )
-        daily_id = cursor.fetchone()[0]  # Получаем ID предложения из базы
-        sentence_ids.append(daily_id)
-        tasks.append(f"{i}. {sentence}")  # Формируем список предложений для пользователя
+        tasks.append(f"{i}. {sentence}")  
 
     conn.commit()
     cursor.close()
@@ -248,9 +322,7 @@ async def letsgo(update: Update, context: CallbackContext):
 
     logging.info(f"🚀 Пользователь {username} ({user_id}) начал перевод. Записано {len(tasks)} предложений.")
 
-    # 📜 **Формируем красивый текстовый список предложений**
     tasks_text = "\n".join(tasks)
-
     await update.message.reply_text(
         f"🚀 **Вы начали перевод! Время пошло.**\n\n"
         f"📜 **Ваши предложения:**\n{tasks_text}\n\n"
