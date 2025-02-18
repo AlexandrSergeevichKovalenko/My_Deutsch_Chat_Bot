@@ -1014,7 +1014,10 @@ async def send_daily_summary(context: CallbackContext):
                     END
                 ), 0
             ) AS время_в_минутах,
-            (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+            COALESCE(
+                (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id), 
+                0
+            ) - COUNT(t.id) AS пропущено,
             COALESCE(AVG(t.score), 0) 
                 - (COALESCE(
                     SUM(
@@ -1023,12 +1026,15 @@ async def send_daily_summary(context: CallbackContext):
                             ELSE 0
                         END
                     ), 0) * 1) 
-                - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id)) * 20 
+                - (COALESCE(
+                    (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id), 
+                    0
+                ) - COUNT(t.id)) * 20 
                 AS итоговый_балл
         FROM translations t
         JOIN user_progress p ON t.user_id = p.user_id
         WHERE t.timestamp::date = CURRENT_DATE AND p.completed = TRUE
-        GROUP BY t.username
+        GROUP BY t.username, t.user_id
         ORDER BY итоговый_балл DESC;
     """)
     rows = cursor.fetchall()
@@ -1062,6 +1068,7 @@ async def send_daily_summary(context: CallbackContext):
             summary += f"👤 {username}: ничего не перевёл!\n"
 
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+
 
 
 
