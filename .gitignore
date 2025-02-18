@@ -14,6 +14,7 @@ it_the_sentences_in_base.py
 scrap_db.py
 what_is_log.py
 explanation.py
-my_own_bot.py
+deepseek_bot.py
 all_tables_in_database_del.py
-
+scrap_db copy.py
+bot_bot.py

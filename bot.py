@@ -232,6 +232,8 @@ async def letsgo(update: Update, context: CallbackContext):
     tasks = []
     sentence_ids = []
     for i, sentence in enumerate(sentences, start=1):
+        if not sentence.strip(): # ✅ Пропускаем пустые строки
+            continue
         cursor.execute(
             "INSERT INTO daily_sentences (date, sentence, unique_id, user_id) VALUES (CURRENT_DATE, %s, %s, %s) RETURNING id;",
             (sentence, i, user_id),  # ✅ Теперь `unique_id` правильно назначается
@@ -400,15 +402,18 @@ async def generate_sentences():
 
     """
 
-    for attempt in range(5):  # Попробовать до 5 раз
+    for attempt in range(5):  # Пробуем до 5 раз при ошибке
         try:
             response = await client.chat.completions.create(
                 model="gpt-4-turbo",
                 messages=[{"role": "user", "content": prompt}]
             )
-            return response.choices[0].message.content.split("\n")
+            sentences = response.choices[0].message.content.split("\n")
+            filtered_sentences = [s.strip() for s in sentences if s.strip()]  # ✅ Фильтруем пустые строки
+            if filtered_sentences:
+                return filtered_sentences
         except openai.RateLimitError:
-            wait_time = (attempt + 1) * 2  # Увеличиваем задержку: 2, 4, 6 сек
+            wait_time = (attempt + 1) * 2  # Задержка: 2, 4, 6 сек...
             print(f"⚠️ OpenAI API Rate Limit. Ждем {wait_time} сек...")
             await asyncio.sleep(wait_time)
 
@@ -508,6 +513,8 @@ async def send_more_tasks(update: Update, context: CallbackContext):
     tasks = []
 
     for i, sentence in enumerate(sentences, start=last_index + 1):  # **Исправлено!**
+        if not sentence.strip(): # ✅ Пропускаем пустые строки
+            continue
         cursor.execute(
             "INSERT INTO daily_sentences (date, sentence, unique_id, user_id) VALUES (CURRENT_DATE, %s, %s, %s);",
             (sentence, i, user_id),
@@ -739,12 +746,165 @@ async def send_progress_report(context: CallbackContext):
 
 
 
+# Рабочая функции(убрал 18.02.25) Когда пытался откорректировать правильное время в отчёте
+# async def send_daily_summary(context: CallbackContext):
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+
+#     # ✅ 1️⃣ Автоматически завершаем всех, кто не завершил перевод
+#     cursor.execute("""
+#         UPDATE user_progress 
+#         SET end_time = NOW(), completed = TRUE 
+#         WHERE completed = FALSE;
+#     """)
+#     conn.commit()
+
+#     # 1️⃣ Получаем список всех, кто делал переводы
+#     cursor.execute("""
+#         SELECT DISTINCT user_id, username 
+#         FROM translations 
+#         WHERE timestamp::date = CURRENT_DATE;
+#     """)
+#     active_users = {row[0]: row[1] for row in cursor.fetchall()}
+
+#     # 2️⃣ Получаем список всех, кто писал хоть что-то в чат
+#     cursor.execute("""
+#         SELECT DISTINCT user_id, username
+#         FROM messages
+#         WHERE timestamp::date = CURRENT_DATE;
+#     """)  
+#     all_users = {row[0]: row[1] for row in cursor.fetchall()}
+
+#     # 3️⃣ Получаем статистику переводов с учётом штрафов за время и пропуски
+#     cursor.execute("""
+#         SELECT 
+#             t.username, 
+#             COUNT(t.id) AS переведено,
+#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
+#             COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS время_в_минутах,
+#             (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id) AS пропущено,
+#             COALESCE(AVG(t.score), 0) 
+#                 - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 1) 
+#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id)) * 20 
+#                 AS итоговый_балл
+#         FROM translations t
+#         JOIN user_progress p ON t.user_id = p.user_id
+#         WHERE t.timestamp::date = CURRENT_DATE AND p.completed = TRUE
+#         GROUP BY t.username
+#         ORDER BY итоговый_балл DESC;
+#     """)
+#     rows = cursor.fetchall()
+
+#     cursor.close()
+#     conn.close()
+
+#     # Если никто не сделал перевод
+#     if not rows:
+#         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Да вы что ох*ели, друзья! Вы же нихуя за сегодня не сделали!")
+#         return
+
+#     summary = "📊 **Итоги дня:**\n\n"
+
+#     # 🏆 Рейтинг лучших по итоговому баллу
+#     medals = ["🥇", "🥈", "🥉"]
+#     for i, (username, count, avg_score, minutes, missed, final_score) in enumerate(rows):
+#         medal = medals[i] if i < len(medals) else "💩"
+#         summary += (
+#             f"{medal} **{username}**\n"
+#             f"📜 Переведено: **{count}**\n"
+#             f"🎯 Средняя оценка: **{avg_score:.1f}/100**\n"
+#             f"⏱ Время: **{minutes:.1f} мин**\n"
+#             f"🚨 Не переведено: **{missed}**\n"
+#             f"🏆 Итоговый балл: **{final_score:.1f}**\n\n"
+#         )
+
+#     # 🚨 Ленивые, кто писал в чат, но не перевел
+#     lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
+#     if lazy_users:
+#         summary += "\n🚨 **Ленивые засранцы:**\n"
+#         for username in lazy_users.values():
+#             summary += f"👤 {username}: ленивое дер*мо\n"
+
+#     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+
+
+
+# async def send_weekly_summary(context: CallbackContext):
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+
+#     # Запрос статистики за 7 дней
+#     cursor.execute("""
+#         SELECT 
+#             t.username, 
+#             COUNT(t.id) AS всего_переводов,
+#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
+#             COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS общее_время_в_минутах,
+#             (SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+#             COALESCE(AVG(t.score), 0) 
+#                 - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 1)
+#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
+#                 AS итоговый_балл
+#         FROM translations t
+#         JOIN user_progress p ON t.user_id = p.user_id
+#         WHERE t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
+#         AND p.completed = TRUE
+#         GROUP BY t.username
+#         ORDER BY итоговый_балл DESC;
+#     """)
+#     rows = cursor.fetchall()
+
+#     cursor.close()
+#     conn.close()
+
+#     if not rows:
+#         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Неделя прошла, но никто не перевел ни одного предложения!")
+#         return
+
+#     summary = "🏆 **Итоги недели:**\n\n"
+
+#     medals = ["🥇", "🥈", "🥉"]  # Для топ-3
+#     for i, (username, count, avg_score, minutes, missed, final_score) in enumerate(rows):
+#         medal = medals[i] if i < len(medals) else "💩"
+#         summary += (
+#             f"{medal} **{username}**\n"
+#             f"📜 Переведено: **{count}**\n"
+#             f"🎯 Средняя оценка: **{avg_score:.1f}/100**\n"
+#             f"⏱ Время: **{minutes:.1f} мин**\n"
+#             f"🚨 Не переведено: **{missed}**\n"
+#             f"🏆 Итоговый балл: **{final_score:.1f}**\n\n"
+#         )
+
+#     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+
+#     # 🔹 **Очищаем старые данные после отправки итогов недели**
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+#     cursor.execute("DELETE FROM translations WHERE timestamp < CURRENT_DATE - INTERVAL '7 days';")
+#     cursor.execute("DELETE FROM user_progress WHERE start_time < CURRENT_DATE - INTERVAL '7 days';")
+#     conn.commit()
+#     cursor.close()
+#     conn.close()
+
+
 
 async def send_daily_summary(context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # ✅ 1️⃣ Автоматически завершаем всех, кто не завершил перевод
+    # ✅ 1️⃣ Исправляем end_time, если оно NULL или меньше start_time
+    cursor.execute("""
+        UPDATE user_progress 
+        SET end_time = (
+            SELECT MAX(timestamp) FROM translations 
+            WHERE translations.user_id = user_progress.user_id
+            AND timestamp::date = CURRENT_DATE
+        )
+        WHERE end_time IS NULL OR end_time < start_time;
+    """)
+    conn.commit()
+
+    # ✅ 2️⃣ Завершаем тех, кто не завершил перевод
     cursor.execute("""
         UPDATE user_progress 
         SET end_time = NOW(), completed = TRUE 
@@ -752,7 +912,7 @@ async def send_daily_summary(context: CallbackContext):
     """)
     conn.commit()
 
-    # 1️⃣ Получаем список всех, кто делал переводы
+    # 3️⃣ Получаем список всех, кто делал переводы
     cursor.execute("""
         SELECT DISTINCT user_id, username 
         FROM translations 
@@ -760,7 +920,7 @@ async def send_daily_summary(context: CallbackContext):
     """)
     active_users = {row[0]: row[1] for row in cursor.fetchall()}
 
-    # 2️⃣ Получаем список всех, кто писал хоть что-то в чат
+    # 4️⃣ Получаем список всех, кто писал хоть что-то в чат
     cursor.execute("""
         SELECT DISTINCT user_id, username
         FROM messages
@@ -768,17 +928,30 @@ async def send_daily_summary(context: CallbackContext):
     """)  
     all_users = {row[0]: row[1] for row in cursor.fetchall()}
 
-    # 3️⃣ Получаем статистику переводов с учётом штрафов за время и пропуски
+    # 5️⃣ **Правильный расчёт статистики**
     cursor.execute("""
         SELECT 
             t.username, 
             COUNT(t.id) AS переведено,
             COALESCE(AVG(t.score), 0) AS средняя_оценка,
-            COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS время_в_минутах,
-            (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id) AS пропущено,
+            COALESCE(
+                SUM(
+                    CASE 
+                        WHEN p.end_time > p.start_time THEN EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60
+                        ELSE 0
+                    END
+                ), 0
+            ) AS время_в_минутах,
+            (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
             COALESCE(AVG(t.score), 0) 
-                - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 1) 
-                - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE) - COUNT(t.id)) * 20 
+                - (COALESCE(
+                    SUM(
+                        CASE 
+                            WHEN p.end_time > p.start_time THEN EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60
+                            ELSE 0
+                        END
+                    ), 0) * 1) 
+                - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id)) * 20 
                 AS итоговый_балл
         FROM translations t
         JOIN user_progress p ON t.user_id = p.user_id
@@ -791,14 +964,12 @@ async def send_daily_summary(context: CallbackContext):
     cursor.close()
     conn.close()
 
-    # Если никто не сделал перевод
+    # 🏆 Формируем итоговый отчёт
     if not rows:
-        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Да вы что ох*ели, друзья! Вы же нихуя за сегодня не сделали!")
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Никто не перевёл ни одного предложения сегодня!")
         return
 
     summary = "📊 **Итоги дня:**\n\n"
-
-    # 🏆 Рейтинг лучших по итоговому баллу
     medals = ["🥇", "🥈", "🥉"]
     for i, (username, count, avg_score, minutes, missed, final_score) in enumerate(rows):
         medal = medals[i] if i < len(medals) else "💩"
@@ -811,14 +982,99 @@ async def send_daily_summary(context: CallbackContext):
             f"🏆 Итоговый балл: **{final_score:.1f}**\n\n"
         )
 
-    # 🚨 Ленивые, кто писал в чат, но не перевел
+    # 🚨 Ленивые
     lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
     if lazy_users:
-        summary += "\n🚨 **Ленивые засранцы:**\n"
+        summary += "\n🚨 **Ленивцы:**\n"
         for username in lazy_users.values():
-            summary += f"👤 {username}: ленивое дер*мо\n"
+            summary += f"👤 {username}: ничего не перевёл!\n"
 
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+
+
+
+
+# async def send_weekly_summary(context: CallbackContext):
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+
+#     # ✅ 1️⃣ Исправляем end_time, если оно NULL или меньше start_time
+#     cursor.execute("""
+#         UPDATE user_progress 
+#         SET end_time = (
+#             SELECT MAX(timestamp) FROM translations 
+#             WHERE translations.user_id = user_progress.user_id
+#             AND timestamp >= CURRENT_DATE - INTERVAL '7 days'
+#         )
+#         WHERE end_time IS NULL OR end_time < start_time;
+#     """)
+#     conn.commit()
+
+#     # ✅ 2️⃣ Запрос статистики за 7 дней
+#     cursor.execute("""
+#         SELECT 
+#             t.username, 
+#             COUNT(t.id) AS всего_переводов,
+#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
+#             COALESCE(
+#                 SUM(
+#                     CASE 
+#                         WHEN p.end_time > p.start_time THEN EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60
+#                         ELSE 0
+#                     END
+#                 ), 0
+#             ) AS общее_время_в_минутах,
+#             (SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+#             COALESCE(AVG(t.score), 0) 
+#                 - (COALESCE(
+#                     SUM(
+#                         CASE 
+#                             WHEN p.end_time > p.start_time THEN EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60
+#                             ELSE 0
+#                         END
+#                     ), 0) * 1)
+#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
+#                 AS итоговый_балл
+#         FROM translations t
+#         JOIN user_progress p ON t.user_id = p.user_id
+#         WHERE t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
+#         AND p.completed = TRUE
+#         GROUP BY t.username
+#         ORDER BY итоговый_балл DESC;
+#     """)
+#     rows = cursor.fetchall()
+
+#     cursor.close()
+#     conn.close()
+
+#     if not rows:
+#         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Неделя прошла, но никто не перевел ни одного предложения!")
+#         return
+
+#     summary = "🏆 **Итоги недели:**\n\n"
+
+#     medals = ["🥇", "🥈", "🥉"]  # Для топ-3
+#     for i, (username, count, avg_score, minutes, missed, final_score) in enumerate(rows):
+#         medal = medals[i] if i < len(medals) else "💩"
+#         summary += (
+#             f"{medal} **{username}**\n"
+#             f"📜 Переведено: **{count}**\n"
+#             f"🎯 Средняя оценка: **{avg_score:.1f}/100**\n"
+#             f"⏱ Общее время: **{minutes:.1f} мин**\n"
+#             f"🚨 Не переведено: **{missed}**\n"
+#             f"🏆 Итоговый балл: **{final_score:.1f}**\n\n"
+#         )
+
+#     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+
+#     # 🔹 **Очищаем старые данные после отправки итогов недели**
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+#     cursor.execute("DELETE FROM translations WHERE timestamp < CURRENT_DATE - INTERVAL '7 days';")
+#     cursor.execute("DELETE FROM user_progress WHERE start_time < CURRENT_DATE - INTERVAL '7 days';")
+#     conn.commit()
+#     cursor.close()
+#     conn.close()
 
 
 
@@ -826,24 +1082,60 @@ async def send_weekly_summary(context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Запрос статистики за 7 дней
+    # ✅ 1️⃣ Обновляем end_time ТОЛЬКО для текущего дня (чтобы избежать некорректных значений)
+    cursor.execute("""
+        UPDATE user_progress 
+        SET end_time = (
+            SELECT MAX(timestamp) FROM translations 
+            WHERE translations.user_id = user_progress.user_id
+            AND translations.timestamp::date = user_progress.start_time::date
+        )
+        WHERE end_time < start_time;
+    """)
+    conn.commit()
+
+    # ✅ 2️⃣ Запрос статистики за 7 дней, теперь с учётом только активных дней
     cursor.execute("""
         SELECT 
             t.username, 
             COUNT(t.id) AS всего_переводов,
             COALESCE(AVG(t.score), 0) AS средняя_оценка,
-            COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) AS общее_время_в_минутах,
-            (SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+            COALESCE((
+                SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+                FROM user_progress p
+                WHERE p.user_id = t.user_id 
+                AND p.start_time::date IN (
+                    SELECT DISTINCT DATE(timestamp) FROM translations WHERE user_id = t.user_id
+                )
+            ), 0) AS общее_время_в_минутах,
+            (SELECT COUNT(*) FROM daily_sentences 
+                WHERE date >= CURRENT_DATE - INTERVAL '7 days' 
+                AND user_id = t.user_id 
+                AND date IN (
+                    SELECT DISTINCT DATE(timestamp) FROM translations WHERE user_id = t.user_id
+                )
+            ) - COUNT(t.id) AS пропущено_за_неделю,
             COALESCE(AVG(t.score), 0) 
-                - (COALESCE(SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60), 9999) * 1)
-                - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
+                - (COALESCE((
+                    SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+                    FROM user_progress p
+                    WHERE p.user_id = t.user_id 
+                    AND p.start_time::date IN (
+                        SELECT DISTINCT DATE(timestamp) FROM translations WHERE user_id = t.user_id
+                    )
+                ), 0) * 2) 
+                - ((SELECT COUNT(*) FROM daily_sentences 
+                    WHERE date >= CURRENT_DATE - INTERVAL '7 days' 
+                    AND user_id = t.user_id 
+                    AND date IN (
+                        SELECT DISTINCT DATE(timestamp) FROM translations WHERE user_id = t.user_id
+                    )
+                ) - COUNT(t.id)) * 20
                 AS итоговый_балл
         FROM translations t
         JOIN user_progress p ON t.user_id = p.user_id
         WHERE t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
-        AND p.completed = TRUE
-        GROUP BY t.username
-        ORDER BY итоговый_балл DESC;
+        GROUP BY t.username;
     """)
     rows = cursor.fetchall()
 
@@ -856,7 +1148,7 @@ async def send_weekly_summary(context: CallbackContext):
 
     summary = "🏆 **Итоги недели:**\n\n"
 
-    medals = ["🥇", "🥈", "🥉"]  # Для топ-3
+    medals = ["🥇", "🥈", "🥉"]  
     for i, (username, count, avg_score, minutes, missed, final_score) in enumerate(rows):
         medal = medals[i] if i < len(medals) else "💩"
         summary += (
@@ -864,20 +1156,11 @@ async def send_weekly_summary(context: CallbackContext):
             f"📜 Переведено: **{count}**\n"
             f"🎯 Средняя оценка: **{avg_score:.1f}/100**\n"
             f"⏱ Время: **{minutes:.1f} мин**\n"
-            f"🚨 Не переведено: **{missed}**\n"
+            f"🚨 Пропущено: **{missed}**\n"
             f"🏆 Итоговый балл: **{final_score:.1f}**\n\n"
         )
 
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
-
-    # 🔹 **Очищаем старые данные после отправки итогов недели**
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM translations WHERE timestamp < CURRENT_DATE - INTERVAL '7 days';")
-    cursor.execute("DELETE FROM user_progress WHERE start_time < CURRENT_DATE - INTERVAL '7 days';")
-    conn.commit()
-    cursor.close()
-    conn.close()
 
 
 
@@ -917,6 +1200,96 @@ async def start(update: Update, context: CallbackContext):
 
 
 
+# рабочая функция но некорректно формировала время за неделю
+# async def user_stats(update: Update, context: CallbackContext):
+#     user_id = update.message.from_user.id
+#     username = update.message.from_user.first_name
+
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+
+#     # 📌 Получаем накопительную статистику за сегодняшний день
+#     cursor.execute("""
+#         SELECT 
+#             COUNT(t.id) AS переводов, 
+#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
+#             COALESCE((
+#                 SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+#                 FROM user_progress p
+#                 WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
+#             ), 0) AS время_в_минутах,
+#             (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+#             COALESCE(AVG(t.score), 0) 
+#                 - (COALESCE((
+#                     SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+#                     FROM user_progress p
+#                     WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
+#                 ), 0) * 2) 
+#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id)) * 20 
+#                 AS итоговый_балл
+#         FROM translations t
+#         WHERE t.user_id = %s AND t.timestamp::date = CURRENT_DATE
+#         GROUP BY t.user_id;
+#     """, (user_id,))
+
+#     today_stats = cursor.fetchone()
+
+#     # 📌 Добавляем правильный расчёт пропущенных за неделю!
+#     cursor.execute("""
+#         SELECT 
+#             COUNT(t.id) AS всего_переводов,
+#             COALESCE(AVG(t.score), 0) AS средняя_оценка,
+#             COALESCE((
+#                 SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+#                 FROM user_progress p
+#                 WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
+#             ), 0) AS общее_время_в_минутах,
+#             (SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id) AS пропущено_за_неделю,
+#             COALESCE(AVG(t.score), 0) 
+#                 - (COALESCE((
+#                     SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
+#                     FROM user_progress p
+#                     WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
+#                 ), 0) * 2) 
+#                 - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
+#                 AS итоговый_балл
+#         FROM translations t
+#         WHERE t.user_id = %s AND t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
+#         GROUP BY t.user_id;
+#     """, (user_id,))
+
+#     weekly_stats = cursor.fetchone()
+
+#     cursor.close()
+#     conn.close()
+
+#     # 📌 Формируем ответ
+#     if today_stats:
+#         today_text = (
+#             f"📅 **Сегодняшняя статистика ({username})**\n"
+#             f"🔹 Переведено: {today_stats[0]}\n"
+#             f"🎯 Средняя оценка: {today_stats[1]:.1f}/100\n"
+#             f"⏱ Время: {today_stats[2]:.1f} мин\n"
+#             f"🚨 Пропущено: {today_stats[3]}\n"
+#             f"🏆 Итоговый балл: {today_stats[4]:.1f}\n"
+#         )
+#     else:
+#         today_text = f"📅 **Сегодняшняя статистика ({username})**\n❌ Нет данных (вы ещё не переводили)."
+
+#     if weekly_stats:
+#         weekly_text = (
+#             f"\n📆 **Статистика за неделю**\n"
+#             f"🔹 Переведено: {weekly_stats[0]}\n"
+#             f"🎯 Средняя оценка: {weekly_stats[1]:.1f}/100\n"
+#             f"⏱ Общее время: {weekly_stats[2]:.1f} мин\n"
+#             f"🚨 Пропущено за неделю: {weekly_stats[3]}\n"
+#             f"🏆 Итоговый балл: {weekly_stats[4]:.1f}\n"
+#         )
+#     else:
+#         weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
+
+#     await update.message.reply_text(today_text + weekly_text)
+
 
 async def user_stats(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
@@ -925,7 +1298,7 @@ async def user_stats(update: Update, context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 📌 Получаем накопительную статистику за сегодняшний день
+    # 📌 Получаем статистику за сегодняшний день
     cursor.execute("""
         SELECT 
             COUNT(t.id) AS переводов, 
@@ -933,16 +1306,20 @@ async def user_stats(update: Update, context: CallbackContext):
             COALESCE((
                 SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
                 FROM user_progress p
-                WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
+                WHERE p.user_id = t.user_id 
+                AND p.start_time::date = CURRENT_DATE
             ), 0) AS время_в_минутах,
-            (SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
+            (SELECT COUNT(*) FROM daily_sentences 
+             WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id) AS пропущено,
             COALESCE(AVG(t.score), 0) 
                 - (COALESCE((
                     SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
                     FROM user_progress p
-                    WHERE p.user_id = t.user_id AND p.start_time::date = CURRENT_DATE
+                    WHERE p.user_id = t.user_id 
+                    AND p.start_time::date = CURRENT_DATE
                 ), 0) * 2) 
-                - ((SELECT COUNT(*) FROM daily_sentences WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id)) * 20 
+                - ((SELECT COUNT(*) FROM daily_sentences 
+                    WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(t.id)) * 20 
                 AS итоговый_балл
         FROM translations t
         WHERE t.user_id = %s AND t.timestamp::date = CURRENT_DATE
@@ -951,7 +1328,7 @@ async def user_stats(update: Update, context: CallbackContext):
 
     today_stats = cursor.fetchone()
 
-    # 📌 Добавляем правильный расчёт пропущенных за неделю!
+    # 📌 Правильный расчёт времени и штрафов за неделю (учитываем только дни с переводами)
     cursor.execute("""
         SELECT 
             COUNT(t.id) AS всего_переводов,
@@ -959,16 +1336,34 @@ async def user_stats(update: Update, context: CallbackContext):
             COALESCE((
                 SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
                 FROM user_progress p
-                WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
+                WHERE p.user_id = t.user_id 
+                AND p.start_time::date IN (
+                    SELECT DISTINCT DATE(timestamp) FROM translations WHERE user_id = t.user_id
+                )
             ), 0) AS общее_время_в_минутах,
-            (SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id) AS пропущено_за_неделю,
+            (SELECT COUNT(*) FROM daily_sentences 
+                WHERE date >= CURRENT_DATE - INTERVAL '7 days' 
+                AND user_id = t.user_id 
+                AND date IN (
+                    SELECT DISTINCT DATE(timestamp) FROM translations WHERE user_id = t.user_id
+                )
+            ) - COUNT(t.id) AS пропущено_за_неделю,
             COALESCE(AVG(t.score), 0) 
                 - (COALESCE((
                     SELECT SUM(EXTRACT(EPOCH FROM (p.end_time - p.start_time))/60)
                     FROM user_progress p
-                    WHERE p.user_id = t.user_id AND p.start_time >= CURRENT_DATE - INTERVAL '7 days'
+                    WHERE p.user_id = t.user_id 
+                    AND p.start_time::date IN (
+                        SELECT DISTINCT DATE(timestamp) FROM translations WHERE user_id = t.user_id
+                    )
                 ), 0) * 2) 
-                - ((SELECT COUNT(*) FROM daily_sentences WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND user_id = t.user_id) - COUNT(t.id)) * 20
+                - ((SELECT COUNT(*) FROM daily_sentences 
+                    WHERE date >= CURRENT_DATE - INTERVAL '7 days' 
+                    AND user_id = t.user_id 
+                    AND date IN (
+                        SELECT DISTINCT DATE(timestamp) FROM translations WHERE user_id = t.user_id
+                    )
+                ) - COUNT(t.id)) * 20
                 AS итоговый_балл
         FROM translations t
         WHERE t.user_id = %s AND t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
@@ -1006,8 +1401,6 @@ async def user_stats(update: Update, context: CallbackContext):
         weekly_text = "\n📆 **Статистика за неделю**\n❌ Нет данных."
 
     await update.message.reply_text(today_text + weekly_text)
-
-
 
 
 
