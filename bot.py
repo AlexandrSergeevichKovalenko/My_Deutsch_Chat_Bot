@@ -1529,11 +1529,9 @@ def main():
     application.add_handler(CommandHandler("getmore", send_more_tasks))
     application.add_handler(CommandHandler("letsgo", letsgo))
     application.add_handler(CommandHandler("done", done))
-    application.add_handler(CommandHandler("yes", confirm_done))
     application.add_handler(CommandHandler("stats", user_stats))  # ✅ Теперь можно смотреть статистику
     application.add_handler(CommandHandler("time", debug_timezone))
     application.add_handler(CommandHandler("resetme", reset_user_command))  # <== Добавили команду для сброса данных
-
 
     # 🔹 Логирование всех сообщений (нужно для учета ленивых)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))  
@@ -1541,45 +1539,35 @@ def main():
     scheduler = BackgroundScheduler()
 
     def run_async_job(async_func, context=None):
+        """Запускает асинхронную функцию внутри APScheduler."""
         if context is None:
-            context = CallbackContext(application=application)  # Создаем `context`, если его нет
+            context = CallbackContext(application=application)
 
-        try:
-            loop = asyncio.get_running_loop()  # ✅ Берем уже работающий event loop
-        except RuntimeError:
-            loop = asyncio.new_event_loop()  # ❌ В потоке `apscheduler` нет loop — создаем новый
-            asyncio.set_event_loop(loop)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(async_func(context))
 
-        loop.run_until_complete(async_func(context))  # ✅ Теперь event loop всегда работает
+    # ✅ Утренняя рассылка
+    scheduler.add_job(lambda: run_async_job(send_morning_reminder), "cron", hour=5, minute=0)
 
-    # ✅ Добавляем задачу в `scheduler` ДЛЯ УТРА
-    scheduler.add_job(
-        lambda: run_async_job(send_morning_reminder, CallbackContext(application=application)),
-        "cron", hour=5, minute=0
-    )
+    # ✅ Утренние задания
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=7, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=16, minute=1)
 
-    # ✅ Запуск утренних заданий
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=7, minute=1)
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks, CallbackContext(application=application)), "cron", hour=16, minute=1)
-
-    # ✅ Запуск промежуточных итогов
+    # ✅ Промежуточные итоги
     for hour in [8, 11, 14]:
-        scheduler.add_job(
-            lambda: run_async_job(send_progress_report, CallbackContext(application=application)),
-            "cron", hour=hour, minute=0
-        )
+        scheduler.add_job(lambda: run_async_job(send_progress_report), "cron", hour=hour, minute=0)
 
-    # ✅ Запуск итогов дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary, CallbackContext(application=application)), "cron", hour=22, minute=58)
+    # ✅ Автоматическая проверка и завершение сессий (каждые 2 минуты)
+    scheduler.add_job(lambda: run_async_job(check_missing_end_time), "interval", minutes=2)
 
-    # ✅ Запуск итогов недели
-    scheduler.add_job(
-        lambda: run_async_job(send_weekly_summary, CallbackContext(application=application)), 
-        "cron", day_of_week="sun", hour=20, minute=0
-    )
+    # ✅ Итоги дня
+    scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=22, minute=58)
+
+    # ✅ Итоги недели
+    scheduler.add_job(lambda: run_async_job(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=0)
 
     scheduler.start()
-    
     application.run_polling()
 
 if __name__ == "__main__":
