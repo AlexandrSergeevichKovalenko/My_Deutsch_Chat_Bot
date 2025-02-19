@@ -992,8 +992,8 @@ async def send_progress_report(context: CallbackContext):
 #     conn.close()
 
 
-async def check_missing_end_time():
-    """Проверяет, есть ли у пользователей переводы, но `end_time` не зафиксировано."""
+async def check_missing_end_time(context: CallbackContext = None):
+    """Исправляет `end_time`, если переводы уже есть, но оно не зафиксировано."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -1589,6 +1589,7 @@ def main():
 
     # ✅ Автоматическая проверка и завершение сессий (каждые 2 минуты)
     scheduler.add_job(lambda: run_async_job(check_missing_end_time), "interval", minutes=2)
+
 
     # ✅ Итоги дня
     scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=22, minute=58)
