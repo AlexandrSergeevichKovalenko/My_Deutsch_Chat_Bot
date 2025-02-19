@@ -8,7 +8,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from apscheduler.schedulers.background import BackgroundScheduler
 
 
-
 # === Настройки бота ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
@@ -110,11 +109,13 @@ def initialize_database():
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_progress (
-            user_id BIGINT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
             username TEXT,
             start_time TIMESTAMP,
             end_time TIMESTAMP,
-            completed BOOLEAN DEFAULT FALSE
+            completed BOOLEAN DEFAULT FALSE,
+            CONSTRAINT unique_user_session UNIQUE (user_id, start_time)
         );
     """)
 
