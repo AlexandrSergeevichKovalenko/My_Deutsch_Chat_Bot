@@ -267,13 +267,13 @@ async def letsgo(update: Update, context: CallbackContext):
 
     # 🔹 **Проверяем, есть ли у пользователя активная сессия за сегодня**
     cursor.execute("""
-        SELECT id FROM user_progress 
+        SELECT user_id FROM user_progress 
         WHERE user_id = %s AND start_time::date = CURRENT_DATE AND completed = FALSE;
     """, (user_id,))
     
     active_session = cursor.fetchone()
 
-    if active_session:
+    if active_session is not None:
         await update.message.reply_text(
             "❌ Вы уже начали перевод! Завершите его перед повторным запуском. "
             "Если вы уже выполняли задания и хотите ещё, используйте '/getmore'."
@@ -332,6 +332,8 @@ async def letsgo(update: Update, context: CallbackContext):
         f"📜 **Ваши предложения:**\n{tasks_text}\n\n"
         "✏️ **Отправьте все переводы и завершите с помощью** `/done`."
     )
+
+
 
 
 
@@ -990,6 +992,33 @@ async def send_progress_report(context: CallbackContext):
 #     conn.close()
 
 
+async def check_missing_end_time():
+    """Проверяет, есть ли у пользователей переводы, но `end_time` не зафиксировано."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # 🔹 Найти пользователей без `end_time`, но с переводами
+    cursor.execute("""
+        SELECT user_id 
+        FROM user_progress
+        WHERE end_time IS NULL
+        AND user_id IN (SELECT DISTINCT user_id FROM translations WHERE timestamp::date = CURRENT_DATE);
+    """)
+    users_with_translations = [row[0] for row in cursor.fetchall()]
+
+    # 🔹 Обновить `end_time` для них
+    if users_with_translations:
+        cursor.execute("""
+            UPDATE user_progress 
+            SET end_time = NOW(), completed = TRUE
+            WHERE user_id = ANY(%s) AND end_time IS NULL;
+        """, (users_with_translations,))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
 
 async def send_daily_summary(context: CallbackContext):
     await check_missing_end_time()  # ✅ Проверяем `end_time`
@@ -1523,17 +1552,17 @@ def main():
     global application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))  # ✅ Теперь `/start` сразу выдаёт инфо
+    application.add_handler(CommandHandler("start", start))  
     application.add_handler(CommandHandler("newtasks", set_new_tasks))
     application.add_handler(CommandHandler("translate", check_user_translation))
     application.add_handler(CommandHandler("getmore", send_more_tasks))
     application.add_handler(CommandHandler("letsgo", letsgo))
     application.add_handler(CommandHandler("done", done))
-    application.add_handler(CommandHandler("stats", user_stats))  # ✅ Теперь можно смотреть статистику
+    application.add_handler(CommandHandler("stats", user_stats))  
     application.add_handler(CommandHandler("time", debug_timezone))
-    application.add_handler(CommandHandler("resetme", reset_user_command))  # <== Добавили команду для сброса данных
+    application.add_handler(CommandHandler("resetme", reset_user_command))  
 
-    # 🔹 Логирование всех сообщений (нужно для учета ленивых)
+    # 🔹 Логирование всех сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))  
 
     scheduler = BackgroundScheduler()
@@ -1572,3 +1601,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
