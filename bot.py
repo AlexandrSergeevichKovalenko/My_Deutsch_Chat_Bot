@@ -804,15 +804,14 @@ async def send_daily_summary(context: CallbackContext):
     # 🔹 Собираем статистику за день
     cursor.execute("""
         SELECT 
-            ds.user_id,
-            COUNT(DISTINCT ds.id) AS всего_предложений,
-            COUNT(DISTINCT t.id) AS переведено,
-            (COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) AS пропущено,
-            COALESCE(p.total_time, 0) AS время_в_минутах,
-            COALESCE(AVG(t.score), 0) AS средняя_оценка,
+            COUNT(DISTINCT ds.id) AS total_sentences,
+            COUNT(DISTINCT t.id) AS translated,
+            (COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) AS missed,
+            COALESCE(p.total_time, 0) AS total_time_minutes,
+            COALESCE(AVG(t.score), 0) AS avg_score,
             COALESCE(AVG(t.score), 0) 
             - (COALESCE(p.total_time, 0) * 1) 
-            - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS итоговый_балл
+            - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS final_score
         FROM daily_sentences ds
         LEFT JOIN translations t ON ds.user_id = t.user_id AND ds.id = t.sentence_id
         LEFT JOIN (
@@ -823,7 +822,7 @@ async def send_daily_summary(context: CallbackContext):
         ) p ON ds.user_id = p.user_id
         WHERE ds.date = CURRENT_DATE
         GROUP BY ds.user_id, p.total_time
-        ORDER BY итоговый_балл DESC;
+        ORDER BY final_score DESC;
     """)
     rows = cursor.fetchall()
 
@@ -837,16 +836,18 @@ async def send_daily_summary(context: CallbackContext):
 
     summary = "📊 **Итоги дня:**\n\n"
     medals = ["🥇", "🥈", "🥉"]
-    for i, (username, count, avg_score, minutes, missed, final_score) in enumerate(rows):
+    for i, (total_sentences, translated, missed, total_time_minutes, avg_score, final_score) in enumerate(rows):
         medal = medals[i] if i < len(medals) else "💩"
         summary += (
             f"{medal} **{username}**\n"
-            f"📜 Переведено: **{count}**\n"
-            f"🎯 Средняя оценка: **{avg_score:.1f}/100**\n"
-            f"⏱ Время: **{minutes:.1f} мин**\n"
+            f"📜 Всего предложений: **{total_sentences}**\n"  # ✅ Добавил total_sentences
+            f"✅ Переведено: **{translated}**\n"
             f"🚨 Не переведено: **{missed}**\n"
+            f"🎯 Средняя оценка: **{avg_score:.1f}/100**\n"
+            f"⏱ Время: **{total_time_minutes:.1f} мин**\n"
             f"🏆 Итоговый балл: **{final_score:.1f}**\n\n"
         )
+
 
     # 🚨 **Добавляем блок про ленивых**
     lazy_users = {uid: uname for uid, uname in all_users.items() if uid not in active_users}
@@ -1217,7 +1218,7 @@ def main():
         scheduler.add_job(lambda: run_async_job(send_progress_report), "cron", hour=hour, minute=0)
 
     # ✅ Итоги дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=21, minute=58)
+    scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=22, minute=58)
 
     # ✅ Итоги недели
     scheduler.add_job(lambda: run_async_job(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=0)
