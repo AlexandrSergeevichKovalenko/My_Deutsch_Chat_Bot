@@ -172,8 +172,8 @@ async def send_morning_reminder(context: CallbackContext):
         "🔹 Команда `/letsgo` используется только для получения первой партии предложений. Если впоследствии захотите участвовать ещё пишите `/getmore`.\n"
         "🔹 После перевода всех предложений обязательно выполните `/done` и подтвердите окончание нажатием `/yes`.\n"
         "🔹 В 09:00, 12:00 и 15:00 будут **промежуточные итоги** по каждому участнику.\n"
-        "🔹 Итоговые результаты дня отправляются в 22:00."
-    )
+        "🔹 Итоговые результаты дня отправляются в 22:00.\n\n"
+    )  
     
     # 📌 Список команд
     commands = (
@@ -722,20 +722,21 @@ async def send_progress_report(context: CallbackContext):
         COUNT(DISTINCT ds.id) AS всего_предложений,
         COUNT(DISTINCT t.id) AS переведено,
         (COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) AS пропущено,
-        COALESCE(p.avg_time, 0) AS среднее_время_сессии_в_минутах, -- ✅ Среднее время
-        COALESCE(p.total_time, 0) AS общее_время_в_минутах, -- ✅ Общее время
+        COALESCE(p.avg_time, 0) AS среднее_время_сессии_в_минутах, -- ✅ Среднее время за день
+        COALESCE(p.total_time, 0) AS общее_время_за_день, -- ✅ Общее время за день
         COALESCE(AVG(t.score), 0) AS средняя_оценка,
         COALESCE(AVG(t.score), 0) 
-        - (COALESCE(p.avg_time, 0) * 1) -- ✅ Используем среднее время в расчётах
-        - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS итоговый_балл
+            - (COALESCE(p.avg_time, 0) * 1) -- ✅ Используем среднее время в расчётах
+            - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS итоговый_балл
     FROM daily_sentences ds
     LEFT JOIN translations t ON ds.user_id = t.user_id AND ds.id = t.sentence_id
     LEFT JOIN (
         SELECT user_id, 
-            AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS avg_time, -- ✅ Среднее время сессии
-            SUM(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS total_time -- ✅ Общее время
+            AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS avg_time, -- ✅ Среднее время сессии за день
+            SUM(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS total_time -- ✅ Общее время за день
         FROM user_progress
-        WHERE completed = TRUE
+        WHERE completed = TRUE 
+            AND start_time::date = CURRENT_DATE -- ✅ Теперь только за день
         GROUP BY user_id
     ) p ON ds.user_id = p.user_id
     WHERE ds.date = CURRENT_DATE
@@ -819,7 +820,8 @@ async def send_daily_summary(context: CallbackContext):
                 AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS avg_time, 
                 SUM(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS total_time
             FROM user_progress
-            WHERE completed = TRUE
+            WHERE completed = true
+        		AND start_time::date = CURRENT_DATE -- ✅ Теперь только за день
             GROUP BY user_id
         ) p ON ds.user_id = p.user_id
         WHERE ds.date = CURRENT_DATE
@@ -1055,7 +1057,7 @@ async def user_stats(update: Update, context: CallbackContext):
             f"📅 **Сегодняшняя статистика ({username})**\n"
             f"🔹 Переведено: {today_stats[0]}\n"
             f"🎯 Средняя оценка: {today_stats[1]:.1f}/100\n"
-            f"⏱ Время: {today_stats[2]:.1f} мин\n"
+            f"⏱ Среднее время сессии: {today_stats[2]:.1f} мин\n"
             f"🚨 Пропущено: {today_stats[3]}\n"
             f"🏆 Итоговый балл: {today_stats[4]:.1f}\n"
         )
@@ -1067,8 +1069,8 @@ async def user_stats(update: Update, context: CallbackContext):
             f"\n📆 **Статистика за неделю**\n"
             f"🔹 Переведено: {weekly_stats[1]}\n"
             f"🎯 Средняя оценка: {weekly_stats[2]:.1f}/100\n"
-            f"⏱ Среднее время: {weekly_stats[3]:.1f} мин\n"
-            f"⏱ Общее время: {weekly_stats[4]:.1f} мин\n"
+            f"⏱ Среднее время сессии: {weekly_stats[3]:.1f} мин\n"
+            f"⏱ Общее время за неделю: {weekly_stats[4]:.1f} мин\n"
             f"🚨 Пропущено за неделю: {weekly_stats[5]}\n"
             f"🏆 Итоговый балл: {weekly_stats[6]:.1f}\n"
         )
