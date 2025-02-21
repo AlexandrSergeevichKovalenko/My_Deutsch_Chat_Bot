@@ -6,6 +6,7 @@ import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
 
 # === Настройки бота ===
@@ -752,8 +753,8 @@ async def send_progress_report(context: CallbackContext):
     if not rows:
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="📊 Сегодня никто не перевёл ни одного предложения!")
         return
-
-    progress_report = "📊 **Промежуточные итоги перевода:**\n\n"
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    progress_report = f"📊 **Промежуточные итоги перевода:**\n🕒 **Время отчёта: {current_time}**\n\n"
 
     for user_id, total, translated, missed, avg_minutes, total_minutes, avg_score, final_score in rows:
         progress_report += (
