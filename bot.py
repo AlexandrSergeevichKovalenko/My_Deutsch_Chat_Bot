@@ -1225,10 +1225,10 @@ def main():
 
     # ✅ Утренние задания
     scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=7, minute=1)
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=16, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=15, minute=1)
 
     # ✅ Промежуточные итоги
-    for hour in [6, 11, 14]:
+    for hour in [6, 12, 18]:
         scheduler.add_job(lambda: run_async_job(send_progress_report), "cron", hour=hour, minute=0)
 
     # ✅ Итоги дня
