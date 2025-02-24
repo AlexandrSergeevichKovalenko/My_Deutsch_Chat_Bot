@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
-
+import asyncio
 
 # === Настройки бота ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -269,7 +269,6 @@ async def letsgo(update: Update, context: CallbackContext):
     )
 
 
-
 async def done(update: Update, context: CallbackContext):
     user = update.message.from_user
     user_id = user.id
@@ -285,7 +284,7 @@ async def done(update: Update, context: CallbackContext):
         ORDER BY start_time DESC 
         LIMIT 1;
     """, (user_id,))
-    
+  
     row = cursor.fetchone()
 
     if not row:
@@ -370,8 +369,6 @@ async def auto_finalize_sessions():
 
 
 # === Функция для генерации новых предложений с помощью GPT-4 ===
-import asyncio
-
 async def generate_sentences():
     client = openai.AsyncOpenAI(api_key=openai.api_key)
     prompt = """
@@ -566,7 +563,7 @@ async def check_translation(original_text, user_translation):
 
     for attempt in range(3):  # До 3-х попыток при ошибках API
         try:
-            response = await client.chat.completions.create(
+            response = await client.chat.completions.create( 
                 model="gpt-4-turbo",
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -581,7 +578,6 @@ async def check_translation(original_text, user_translation):
 
 
 import re
-import logging
 
 async def check_user_translation(update: Update, context: CallbackContext):
     if not update.message or not update.message.text:
@@ -597,7 +593,7 @@ async def check_user_translation(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Ошибка: После /translate должен идти список переводов.")
         return
 
-    # Разбираем входной текст на номера предложений и переводы
+    # Разбираем входной текст на номера предложений и переводы [('1', 'Hallo Welt'), ('2', 'Wie geht es dir?'), ('3', 'Ich liebe Programmierung.')]
     pattern = re.compile(r"(\d+)\.\s*(.+)")
     translations = pattern.findall(translations_text)
 
@@ -692,7 +688,6 @@ async def check_user_translation(update: Update, context: CallbackContext):
     else:
         logging.info(f"📩 Длина сообщения: {len(message_text)} символов")
         await update.message.reply_text(message_text)
-
 
 
 
@@ -812,7 +807,7 @@ async def send_daily_summary(context: CallbackContext):
             COALESCE(p.total_time, 0) AS total_time_minutes, 
             COALESCE(AVG(t.score), 0) AS avg_score,
             COALESCE(AVG(t.score), 0) 
-            - (COALESCE(p.avg_time, 0) * 1) 
+            - (COALESCE(p.avg_time, 0) * 2) 
             - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS final_score
         FROM daily_sentences ds
         LEFT JOIN translations t ON ds.user_id = t.user_id AND ds.id = t.sentence_id
@@ -888,7 +883,7 @@ async def send_weekly_summary(context: CallbackContext):
         AND user_id = t.user_id) 
         - COUNT(DISTINCT t.sentence_id) AS пропущено_за_неделю,
         COALESCE(AVG(t.score), 0) 
-            - (COALESCE(p.avg_time, 0) * 1) -- ✅ Среднее время в штрафе
+            - (COALESCE(p.avg_time, 0) * 2) -- ✅ Среднее время в штрафе
             - ((SELECT COUNT(*) 
                 FROM daily_sentences 
                 WHERE date >= CURRENT_DATE - INTERVAL '7 days' 
@@ -981,7 +976,7 @@ async def user_stats(update: Update, context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 📌 Статистика за сегодняшний день (обновлено для среднего времени)
+    # 📌 Статистика за сегодняшний день (обновлено для среднего времени) Если за семь дней считать то нужно так: WHERE date BETWEEN CURRENT_DATE - INTERVAL '7 days' AND CURRENT_DATE - INTERVAL '1 day'
     cursor.execute("""
         SELECT 
             COUNT(DISTINCT t.sentence_id) AS переведено,  
@@ -1002,7 +997,7 @@ async def user_stats(update: Update, context: CallbackContext):
                     WHERE p.user_id = t.user_id 
                         AND p.start_time::date = CURRENT_DATE
                         AND p.completed = TRUE
-                ), 0) * 1) 
+                ), 0) * 2) 
                 - (GREATEST(0, (SELECT COUNT(*) FROM daily_sentences 
                                 WHERE date = CURRENT_DATE AND user_id = t.user_id) - COUNT(DISTINCT t.sentence_id)) * 20) AS итоговый_балл
         FROM translations t
