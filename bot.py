@@ -1231,7 +1231,7 @@ def main():
     scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=22, minute=1)
 
     # ✅ Итоги недели
-    scheduler.add_job(lambda: run_async_job(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=0)
+    scheduler.add_job(lambda: run_async_job(send_weekly_summary), "cron", day_of_week="sun", hour=22, minute=15)
 
     # ✅ Автозавершение сессий в 23:59
     scheduler.add_job(lambda: run_async_job(force_finalize_sessions), "cron", hour=23, minute=59)
