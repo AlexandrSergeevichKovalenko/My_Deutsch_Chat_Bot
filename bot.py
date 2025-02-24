@@ -722,7 +722,7 @@ async def send_progress_report(context: CallbackContext):
         COALESCE(p.total_time, 0) AS общее_время_за_день, -- ✅ Общее время за день
         COALESCE(AVG(t.score), 0) AS средняя_оценка,
         COALESCE(AVG(t.score), 0) 
-            - (COALESCE(p.avg_time, 0) * 1) -- ✅ Используем среднее время в расчётах
+            - (COALESCE(p.avg_time, 0) * 2) -- ✅ Используем среднее время в расчётах
             - ((COUNT(DISTINCT ds.id) - COUNT(DISTINCT t.id)) * 20) AS итоговый_балл
     FROM daily_sentences ds
     LEFT JOIN translations t ON ds.user_id = t.user_id AND ds.id = t.sentence_id
@@ -879,14 +879,14 @@ async def send_weekly_summary(context: CallbackContext):
         COALESCE(p.total_time, 0) AS общее_время_в_минутах, -- ✅ Теперь есть и общее время
         (SELECT COUNT(*) 
         FROM daily_sentences 
-        WHERE date >= CURRENT_DATE - INTERVAL '7 days' 
+        WHERE date >= CURRENT_DATE - INTERVAL '6 days' 
         AND user_id = t.user_id) 
         - COUNT(DISTINCT t.sentence_id) AS пропущено_за_неделю,
         COALESCE(AVG(t.score), 0) 
             - (COALESCE(p.avg_time, 0) * 2) -- ✅ Среднее время в штрафе
             - ((SELECT COUNT(*) 
                 FROM daily_sentences 
-                WHERE date >= CURRENT_DATE - INTERVAL '7 days' 
+                WHERE date >= CURRENT_DATE - INTERVAL '6 days' 
                 AND user_id = t.user_id) 
             - COUNT(DISTINCT t.sentence_id)) * 20
             AS итоговый_балл
@@ -897,10 +897,10 @@ async def send_weekly_summary(context: CallbackContext):
             SUM(EXTRACT(EPOCH FROM (end_time - start_time))/60) AS total_time -- ✅ Общее время
         FROM user_progress 
         WHERE completed = TRUE 
-        AND start_time >= CURRENT_DATE - INTERVAL '7 days'
+        AND start_time >= CURRENT_DATE - INTERVAL '6 days'
         GROUP BY user_id
     ) p ON t.user_id = p.user_id
-    WHERE t.timestamp >= CURRENT_DATE - INTERVAL '7 days'
+    WHERE t.timestamp >= CURRENT_DATE - INTERVAL '6 days'
     GROUP BY t.username, t.user_id, p.avg_time, p.total_time
     ORDER BY итоговый_балл DESC;
 
@@ -1028,16 +1028,16 @@ async def user_stats(update: Update, context: CallbackContext):
                 SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS total_time 
             FROM user_progress
             WHERE completed = TRUE 
-                AND start_time >= CURRENT_DATE - INTERVAL '7 days'
+                AND start_time >= CURRENT_DATE - INTERVAL '6 days'
             GROUP BY user_id
         ) p ON t.user_id = p.user_id
         LEFT JOIN (
             SELECT user_id, COUNT(*) AS total_sentences
             FROM daily_sentences
-            WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+            WHERE date >= CURRENT_DATE - INTERVAL '6 days'
             GROUP BY user_id
         ) ds ON t.user_id = ds.user_id
-        WHERE t.timestamp >= CURRENT_DATE - INTERVAL '7 days' 
+        WHERE t.timestamp >= CURRENT_DATE - INTERVAL '6 days' 
             AND t.user_id = %s  -- ✅ Фильтр по конкретному пользователю
         GROUP BY t.user_id, p.avg_session_time, p.total_time, ds.total_sentences;
     """, (user_id,))
