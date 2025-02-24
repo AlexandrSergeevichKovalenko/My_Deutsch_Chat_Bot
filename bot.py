@@ -512,7 +512,7 @@ async def send_more_tasks(update: Update, context: CallbackContext):
             continue
         cursor.execute(
             "INSERT INTO daily_sentences (date, sentence, unique_id, user_id) VALUES (CURRENT_DATE, %s, %s, %s);",
-            (sentence, i, user_id),
+            (sentence, i, user_id)
         )
         tasks.append(f"{i}. {sentence}")  # **Теперь нумерация корректная!**
 
@@ -627,7 +627,7 @@ async def check_user_translation(update: Update, context: CallbackContext):
         # 🔹 **Получаем оригинальный текст предложения**
         cursor.execute(
             "SELECT id, sentence FROM daily_sentences WHERE date = CURRENT_DATE AND unique_id = %s AND user_id = %s;",
-            (sentence_number, user_id),
+            (sentence_number, user_id)
         )
         row = cursor.fetchone()
 
@@ -659,11 +659,10 @@ async def check_user_translation(update: Update, context: CallbackContext):
         score = int(score_match.group(1)) if score_match else None
 
         # 🔹 **Сохраняем перевод в базу**
-        cursor.execute(
-            "INSERT INTO translations (user_id, username, sentence_id, user_translation, score, feedback) "
-            "VALUES (%s, %s, %s, %s, %s, %s);",
-            (user_id, username, sentence_id, user_translation, score, feedback),
-        )
+        cursor.execute("""
+            INSERT INTO translations (user_id, username, sentence_id, user_translation, score, feedback)
+            VALUES (%s, %s, %s, %s, %s, %s);""",
+            (user_id, username, sentence_id, user_translation, score, feedback))
 
         conn.commit()
 
@@ -1228,10 +1227,10 @@ def main():
         scheduler.add_job(lambda: run_async_job(send_progress_report), "cron", hour=hour, minute=0)
 
     # ✅ Итоги дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=22, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=22, minute=55)
 
     # ✅ Итоги недели
-    scheduler.add_job(lambda: run_async_job(send_weekly_summary), "cron", day_of_week="sun", hour=22, minute=15)
+    scheduler.add_job(lambda: run_async_job(send_weekly_summary), "cron", day_of_week="sun", hour=22, minute=57)
 
     # ✅ Автозавершение сессий в 23:59
     scheduler.add_job(lambda: run_async_job(force_finalize_sessions), "cron", hour=23, minute=59)
