@@ -1227,10 +1227,10 @@ def main():
         scheduler.add_job(lambda: run_async_job(send_progress_report), "cron", hour=hour, minute=0)
 
     # ✅ Итоги дня
-    scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=22, minute=55)
+    scheduler.add_job(lambda: run_async_job(send_daily_summary), "cron", hour=22, minute=2)
 
     # ✅ Итоги недели
-    scheduler.add_job(lambda: run_async_job(send_weekly_summary), "cron", day_of_week="sun", hour=22, minute=57)
+    scheduler.add_job(lambda: run_async_job(send_weekly_summary), "cron", day_of_week="sun", hour=22, minute=22)
 
     # ✅ Автозавершение сессий в 23:59
     scheduler.add_job(lambda: run_async_job(force_finalize_sessions), "cron", hour=23, minute=59)
