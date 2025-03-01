@@ -44,7 +44,7 @@ if not openai.api_key:
 
 
 # === Подключение к базе данных PostgreSQL ===
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY")
 if not DATABASE_URL:
     raise ValueError("❌ Ошибка: DATABASE_URL не задан. Проверь переменные окружения!")
 
@@ -1095,24 +1095,24 @@ from telegram.ext import CommandHandler, CallbackContext
 import psycopg2
 import os
 
-# Функция для сброса данных по ID
-def reset_user_data(user_id):
-    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-    cursor = conn.cursor()
+# # Функция для сброса данных по ID
+# def reset_user_data(user_id):
+#     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+#     cursor = conn.cursor()
 
-    # Удаляем переводы за сегодня
-    cursor.execute("DELETE FROM translations WHERE user_id = %s AND timestamp::date = CURRENT_DATE;", (user_id,))
+#     # Удаляем переводы за сегодня
+#     cursor.execute("DELETE FROM translations WHERE user_id = %s AND timestamp::date = CURRENT_DATE;", (user_id,))
 
-    # Удаляем прогресс пользователя
-    cursor.execute("DELETE FROM user_progress WHERE user_id = %s;", (user_id,))
+#     # Удаляем прогресс пользователя
+#     cursor.execute("DELETE FROM user_progress WHERE user_id = %s;", (user_id,))
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+#     conn.commit()
+#     cursor.close()
+#     conn.close()
 
 # Обработчик команды /resetme <ID>
 # === Функция для очистки данных пользователя ===
-import datetime
+
 
 # === Функция для очистки данных пользователя ===
 def reset_user_data(user_id, date=None):
