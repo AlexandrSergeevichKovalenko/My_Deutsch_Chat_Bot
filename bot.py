@@ -1220,14 +1220,14 @@ def main():
         loop.run_until_complete(async_func(context))
 
     # ✅ Утренняя рассылка
-    scheduler.add_job(lambda: run_async_job(send_morning_reminder), "cron", hour=5, minute=0)
+    scheduler.add_job(lambda: run_async_job(send_morning_reminder), "cron", hour=5, minute=1)
 
     # ✅ Утренние задания
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=7, minute=1)
-    scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=15, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=10, minute=1)
+    scheduler.add_job(lambda: run_async_job(send_morning_tasks), "cron", hour=14, minute=1)
 
     # ✅ Промежуточные итоги
-    for hour in [6, 12, 18]:
+    for hour in [9, 13, 17]:
         scheduler.add_job(lambda: run_async_job(send_progress_report), "cron", hour=hour, minute=0)
 
     # ✅ Итоги дня
