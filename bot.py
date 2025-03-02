@@ -8,6 +8,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import asyncio
+import requests
+
+
+# Ваш API-ключ для mediastack
+API_KEY_NEWS = "51a77cd239254babdb9283ddd7417089"
 
 # === Настройки бота ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -128,9 +133,39 @@ def initialize_database():
 
 
 
-
 # Вызываем при старте бота
 initialize_database()
+
+
+
+# Функция для получения новостей на немецком
+async def send_german_news(context: CallbackContext):
+    url = f"http://api.mediastack.com/v1/news?access_key={API_KEY_NEWS}&languages=de&countries=de&limit=3" # Ограничим до 3 новостей
+    #url = f"http://api.mediastack.com/v1/news?access_key={API_KEY_NEWS}&languages=de&countries=at&limit=3" for Austria
+
+    response = requests.get(url)
+
+    if response.status_code == 200:
+        data = response.json()
+
+        if "data" in data and len(data["data"]) > 0:
+            print("📢 Nachrichten auf Deutsch:")
+            for i, article in enumerate(data["data"], start=1):  # Ограничим до 3 новостей in API request
+                title = article.get("title", "Без заголовка")
+                source = article.get("source", "Неизвестный источник")
+                url = article.get("url", "#")
+
+                message = f"📰 {i}. *{title}*\n\n📌 {source}\n\n[Читать полностью]({url})"
+                await context.bot.send_message(
+                    chat_id=GROUP_CHAT_ID,
+                    text=message,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=False  # Чтобы загружались превью страниц
+                )
+        else:
+            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="❌ Нет свежих новостей на сегодня!")
+    else:
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=f"❌ Ошибка: {response.status_code} - {response.text}")
 
 
 
@@ -263,7 +298,7 @@ async def letsgo(update: Update, context: CallbackContext):
 
     tasks_text = "\n".join(tasks)
     await update.message.reply_text(
-        f"🚀 **Вы начали перевод! Время пошло.**\n\n"
+        f"🚀 **{username}, Вы начали перевод! Время пошло.**\n\n"
         f"📜 **Ваши предложения:**\n{tasks_text}\n\n"
         "✏️ **Отправьте все переводы и завершите с помощью** `/done`."
     )
@@ -526,7 +561,7 @@ async def send_more_tasks(update: Update, context: CallbackContext):
 
     # 🔹 Отправляем пользователю новые предложения
     message = (
-        f"✅ **Вы запросили дополнительные предложения! Время пошло.**\n\n"
+        f"✅ **{username}, вы запросили дополнительные предложения! Время пошло.**\n\n"
         + "\n".join(tasks) +
         "\n\n📌 Формат ответа: `/translate <номер> <ваш перевод>`\n"
         "⚠ **Не забудьте завершить перевод с помощью** `/done`!"
@@ -1238,6 +1273,8 @@ def main():
 
     # ✅ Автозавершение сессий в 23:59
     scheduler.add_job(lambda: run_async_job(force_finalize_sessions), "cron", hour=23, minute=59)
+
+    scheduler.add_job(lambda: run_async_job(send_german_news, CallbackContext(application=application)), "cron", hour=5, minute=30)
 
     scheduler.start()
     print("🚀 Бот запущен! Ожидаем сообщения...")
