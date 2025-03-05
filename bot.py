@@ -140,7 +140,7 @@ initialize_database()
 
 # Функция для получения новостей на немецком
 async def send_german_news(context: CallbackContext):
-    url = f"http://api.mediastack.com/v1/news?access_key={API_KEY_NEWS}&languages=de&countries=de&limit=3" # Ограничим до 3 новостей
+    url = f"http://api.mediastack.com/v1/news?access_key={API_KEY_NEWS}&languages=de&technology&countries=de,au&limit=2" # Ограничим до 3 новостей
     #url = f"http://api.mediastack.com/v1/news?access_key={API_KEY_NEWS}&languages=de&countries=at&limit=3" for Austria
 
     response = requests.get(url)
