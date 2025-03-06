@@ -41,7 +41,7 @@ for key, value in os.environ.items():
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # 🔍 Debugging: Проверяем, что Railway видит переменную
-print(f"DEBUG: OPENAI_API_KEY = {repr(openai.api_key)}")
+#print(f"DEBUG: OPENAI_API_KEY = {repr(openai.api_key)}")
 
 if not openai.api_key:
     raise ValueError("❌ Ошибка: OPENAI_API_KEY не задан. Проверь переменные окружения!")
