@@ -1270,15 +1270,18 @@ def main():
 
     # ✅ Автозавершение сессий в 23:59
     scheduler.add_job(lambda: run_async_job(force_finalize_sessions), "cron", hour=23, minute=59)
-
+    
     scheduler.add_job(lambda: run_async_job(send_german_news, CallbackContext(application=application)), "cron", hour=5, minute=30)
 
     scheduler.start()
     print("🚀 Бот запущен! Ожидаем сообщения...")
     application.run_polling()
 
+import sys
 # ✅ Вызов main() для запуска бота
 if __name__ == "__main__":
+    # временно останавливаем так как не нужен пока данный bot
+    sys.exit()
     main()
 
 
